@@ -1,0 +1,376 @@
+{
+  "name": "ollama-agent-vscode",
+  "displayName": "Ollama Agent",
+  "description": "An intelligent coding agent powered by Ollama for VS Code",
+  "version": "0.0.1",
+  "publisher": "cstannahill",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "packageManager": "pnpm@10.12.4",
+  "categories": [
+    "Other",
+    "AI",
+    "Machine Learning"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ollamaAgent.run",
+        "title": "Run Agent on Current File",
+        "category": "Ollama Agent"
+      },
+      {
+        "command": "ollamaAgent.chat",
+        "title": "Open Agent Chat",
+        "category": "Ollama Agent"
+      },
+      {
+        "command": "ollamaAgent.openSettings",
+        "title": "Open Settings",
+        "category": "Ollama Agent",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "ollamaAgent.documentation",
+        "title": "Open Documentation Hub",
+        "category": "Ollama Agent",
+        "icon": "$(book)"
+      },
+      {
+        "command": "ollamaAgent.projectDashboard",
+        "title": "Open Project Dashboard",
+        "category": "Ollama Agent",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "ollamaAgent.contextVisualization",
+        "title": "Open Context Visualization",
+        "category": "Ollama Agent",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "ollamaAgent.analyzeWorkspace",
+        "title": "Analyze Workspace Context",
+        "category": "Ollama Agent",
+        "icon": "$(search)"
+      },
+      {
+        "command": "ollamaAgent.projectContext",
+        "title": "Open Project Context",
+        "category": "Ollama Agent",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "ollamaAgent.foundationModels",
+        "title": "Configure Foundation Agent Models",
+        "category": "Ollama Agent",
+        "icon": "$(gear)"
+      }
+    ],
+    "configuration": {
+      "title": "Ollama Agent",
+      "properties": {
+        "ollamaAgent.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "URL of the Ollama server"
+        },
+        "ollamaAgent.model": {
+          "type": "string",
+          "default": "llama3.2:3b",
+          "description": "Default model to use for agent tasks"
+        },
+        "ollamaAgent.logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info",
+          "description": "Log level for agent operations"
+        },
+        "ollamaAgent.context.maxContextWindow": {
+          "type": "number",
+          "default": 8000,
+          "description": "Maximum context window size for context items"
+        },
+        "ollamaAgent.context.enableSemanticSearch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic search for context retrieval"
+        },
+        "ollamaAgent.context.cacheSize": {
+          "type": "number",
+          "default": 100,
+          "description": "Context search cache size"
+        },
+        "ollamaAgent.performance.enableOptimizedExecution": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable optimized ReAct execution with parallel tool processing"
+        },
+        "ollamaAgent.performance.maxConcurrency": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum number of tools to execute in parallel"
+        },
+        "ollamaAgent.performance.enableParallelExecution": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable parallel tool execution when possible"
+        },
+        "ollamaAgent.performance.enableResponseStreaming": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable streaming responses for better user experience"
+        },
+        "ollamaAgent.model.quantized": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use quantized model variant for better performance"
+        },
+        "ollamaAgent.model.quantization": {
+          "type": "string",
+          "enum": [
+            "q4_0",
+            "q4_1",
+            "q5_0",
+            "q5_1",
+            "q8_0",
+            "f16",
+            "f32"
+          ],
+          "default": "q4_0",
+          "description": "Quantization level for the model"
+        },
+        "ollamaAgent.model.contextWindow": {
+          "type": "number",
+          "default": 4096,
+          "description": "Context window size for the model"
+        },
+        "ollamaAgent.vllm.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable experimental vLLM integration for enhanced performance"
+        },
+        "ollamaAgent.vllm.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:11435",
+          "description": "URL of the vLLM server (default: Ollama port + 1)"
+        },
+        "ollamaAgent.vllm.model": {
+          "type": "string",
+          "default": "microsoft/DialoGPT-medium",
+          "description": "Default vLLM model to use"
+        },
+        "ollamaAgent.vllm.maxModelLen": {
+          "type": "number",
+          "default": 2048,
+          "description": "Maximum model sequence length for vLLM"
+        },
+        "ollamaAgent.vllm.tensorParallelSize": {
+          "type": "number",
+          "default": 1,
+          "description": "Tensor parallel size for vLLM (number of GPUs)"
+        },
+        "ollamaAgent.vllm.gpuMemoryUtilization": {
+          "type": "number",
+          "default": 0.9,
+          "description": "GPU memory utilization ratio for vLLM (0.0-1.0)"
+        },
+        "ollamaAgent.routing.chatPreference": {
+          "type": "string",
+          "enum": ["ollama", "vllm", "auto"],
+          "default": "auto",
+          "description": "Preferred provider for chat tasks"
+        },
+        "ollamaAgent.routing.embeddingPreference": {
+          "type": "string",
+          "enum": ["ollama", "vllm", "auto"],
+          "default": "vllm",
+          "description": "Preferred provider for embedding tasks (vLLM recommended)"
+        },
+        "ollamaAgent.routing.toolCallingPreference": {
+          "type": "string",
+          "enum": ["ollama", "vllm", "auto"],
+          "default": "ollama",
+          "description": "Preferred provider for tool calling (Ollama recommended)"
+        },
+        "ollamaAgent.routing.batchProcessingPreference": {
+          "type": "string",
+          "enum": ["ollama", "vllm", "auto"],
+          "default": "vllm",
+          "description": "Preferred provider for batch processing (vLLM recommended)"
+        },
+        "ollamaAgent.routing.preferSpeed": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prioritize speed over accuracy in routing decisions"
+        },
+        "ollamaAgent.routing.enableFallback": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable fallback to alternative provider if primary fails"
+        },
+        "ollamaAgent.routing.fallbackTimeout": {
+          "type": "number",
+          "default": 10000,
+          "description": "Timeout in milliseconds before falling back to alternative provider"
+        },
+        "ollamaAgent.foundation.enableVLLMOptimization": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use vLLM for foundation pipeline optimization when available"
+        },
+        "ollamaAgent.foundation.models.retriever": {
+          "type": "string",
+          "default": "qwen3:1.7b",
+          "description": "Model for Retriever Agent (semantic search and content retrieval)"
+        },
+        "ollamaAgent.foundation.models.reranker": {
+          "type": "string", 
+          "default": "gemma3:1b",
+          "description": "Model for Reranker Agent (cross-encoder document scoring)"
+        },
+        "ollamaAgent.foundation.models.toolSelector": {
+          "type": "string",
+          "default": "gemma3:1b",
+          "description": "Model for Tool Selector Agent (DPO-style tool classification)"
+        },
+        "ollamaAgent.foundation.models.critic": {
+          "type": "string",
+          "default": "deepseek-r1:latest",
+          "description": "Model for Critic/Evaluator Agent (HH-RLHF style quality assessment)"
+        },
+        "ollamaAgent.foundation.models.taskPlanner": {
+          "type": "string",
+          "default": "deepseek-r1:latest",
+          "description": "Model for Task Planner Agent (CAMEL-AI/AutoGPT style planning)"
+        },
+        "ollamaAgent.foundation.models.queryRewriter": {
+          "type": "string",
+          "default": "qwen3:1.7b",
+          "description": "Model for Query Rewriter Agent (search optimization)"
+        },
+        "ollamaAgent.foundation.models.cotGenerator": {
+          "type": "string",
+          "default": "deepseek-r1:latest",
+          "description": "Model for Chain-of-Thought Generator Agent (Flan-CoT reasoning)"
+        },
+        "ollamaAgent.foundation.models.chunkScorer": {
+          "type": "string",
+          "default": "gemma3:1b",
+          "description": "Model for Chunk Scorer Agent (content relevance scoring)"
+        },
+        "ollamaAgent.foundation.models.actionCaller": {
+          "type": "string",
+          "default": "codellama:7b",
+          "description": "Model for Action Caller Agent (function-call tuned operations)"
+        },
+        "ollamaAgent.foundation.models.embedder": {
+          "type": "string",
+          "default": "nomic-embed-text:latest",
+          "description": "Model for Embedder Agent (vector operations and similarity)"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ollama-agent",
+          "title": "Ollama Agent",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "ollama-agent": [
+        {
+          "id": "ollama-agent-chat",
+          "name": "Chat",
+          "when": "true",
+          "icon": "$(comment-discussion)"
+        },
+        {
+          "id": "ollama-agent-foundation-models",
+          "name": "Foundation Models",
+          "when": "true",
+          "icon": "$(gear)"
+        },
+        {
+          "id": "ollama-agent-settings",
+          "name": "Settings",
+          "when": "true",
+          "icon": "$(settings)"
+        },
+        {
+          "id": "ollama-agent-documentation",
+          "name": "Documentation",
+          "when": "true",
+          "icon": "$(book)"
+        },
+        {
+          "id": "ollama-agent-context",
+          "name": "Context",
+          "when": "true",
+          "icon": "$(file-directory)"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "ollamaAgent.chat",
+        "key": "f2",
+        "mac": "f2",
+        "when": "editorTextFocus || !inputFocus"
+      },
+      {
+        "command": "ollamaAgent.openSettings",
+        "key": "ctrl+f2",
+        "mac": "cmd+f2",
+        "when": "!inputFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^24.1.0",
+    "@types/node-fetch": "^2.6.13",
+    "@types/sqlite3": "^5.1.0",
+    "@types/turndown": "^5.0.5",
+    "@types/vscode": "^1.102.0",
+    "@typescript-eslint/eslint-plugin": "^8.38.0",
+    "@typescript-eslint/parser": "^8.38.0",
+    "eslint": "^9.32.0",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@chroma-core/default-embed": "^0.1.8",
+    "@langchain/community": "^0.3.49",
+    "@langchain/core": "^0.3.66",
+    "axios": "^1.11.0",
+    "chalk": "^5.4.1",
+    "cheerio": "^1.0.0",
+    "chromadb": "^3.0.10",
+    "jsdom": "^25.0.1",
+    "langchain": "^0.3.30",
+    "node-fetch": "^3.3.2",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "turndown": "^7.2.0",
+    "zod": "^4.0.14"
+  }
+}
