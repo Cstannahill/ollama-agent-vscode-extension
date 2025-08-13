@@ -67,21 +67,8 @@ export class ToolSelectorAgent implements IToolSelectorAgent {
         }
       }
       
-      // Test LLM connection with timeout and graceful fallback
-      try {
-        const testResponse = await Promise.race([
-          this.llm.generateText("test tool selection"),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("LLM test timeout")), 5000)
-          )
-        ]);
-        logger.debug("[TOOL_SELECTOR_AGENT] LLM connection test successful");
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 
-          (typeof error === 'object' && error !== null) ? JSON.stringify(error) : String(error);
-        logger.warn(`[TOOL_SELECTOR_AGENT] LLM test failed, continuing with degraded functionality: ${errorMessage}`);
-        // Don't throw here - allow the agent to initialize with limited functionality
-      }
+      // Skip LLM test during initialization to prevent timeouts - test on first use instead
+      logger.debug("[TOOL_SELECTOR_AGENT] LLM connection will be tested on first use");
       
       this.initialized = true;
       logger.info(`[TOOL_SELECTOR_AGENT] Tool selector initialized with ${this.toolMetadataCache.size} tools`);
@@ -134,10 +121,19 @@ export class ToolSelectorAgent implements IToolSelectorAgent {
       // Phase 1: Initial tool ranking
       const rankedTools = await this.rankTools(task, tools);
       
-      // Phase 2: DPO-style preference optimization
-      const optimizedSelection = await this.optimizeSelection(task, rankedTools);
+      // Phase 2: Filter out non-existent tools
+      const existingTools = rankedTools.filter(ranking => {
+        const exists = this.toolMetadataCache.has(ranking.toolId);
+        if (!exists) {
+          logger.warn(`[TOOL_SELECTOR_AGENT] Filtered out non-existent tool: ${ranking.toolId}`);
+        }
+        return exists;
+      });
       
-      // Phase 3: Validation
+      // Phase 3: DPO-style preference optimization
+      const optimizedSelection = await this.optimizeSelection(task, existingTools);
+      
+      // Phase 4: Validation
       const validation = await this.validateToolSelection(task, optimizedSelection.selectedTools);
       
       // Adjust confidence based on validation
@@ -267,6 +263,7 @@ export class ToolSelectorAgent implements IToolSelectorAgent {
       }
 
       logger.debug(`[TOOL_SELECTOR_AGENT] Loaded ${this.toolMetadataCache.size} tool metadata entries`);
+      logger.debug(`[TOOL_SELECTOR_AGENT] Available tools: ${Array.from(this.toolMetadataCache.keys()).join(', ')}`);
     } catch (error) {
       logger.warn("[TOOL_SELECTOR_AGENT] Failed to load tool metadata:", error);
     }
@@ -280,6 +277,7 @@ export class ToolSelectorAgent implements IToolSelectorAgent {
     
     try {
       const response = await this.llm.generateText(rankingPrompt);
+      logger.debug(`[TOOL_SELECTOR_AGENT] LLM response for ranking (first 200 chars): ${response.substring(0, 200)}...`);
 
       return this.parseRankingResponse(response, tools);
     } catch (error) {
@@ -369,6 +367,12 @@ ${toolList}
     if (parseResult.success && parseResult.data.rankings) {
       const rankings = parseResult.data.rankings;
       
+      // Validate that rankings is an array
+      if (!Array.isArray(rankings)) {
+        logger.warn(`[TOOL_SELECTOR_AGENT] Expected rankings array, got ${typeof rankings}:`, rankings);
+        return this.fallbackParseRanking(response, tools);
+      }
+      
       return rankings.map((ranking: any) => ({
         toolId: ranking.toolId || ranking.tool_id || ranking.name,
         rank: 0, // Will be set later
@@ -379,6 +383,8 @@ ${toolList}
       );
     }
 
+    logger.debug(`[TOOL_SELECTOR_AGENT] JSON parsing failed or no rankings found, using fallback. Parse success: ${parseResult.success}, data:`, parseResult.data);
+    
     // Fallback parsing
     return this.fallbackParseRanking(response, tools);
   }

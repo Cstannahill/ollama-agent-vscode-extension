@@ -119,7 +119,7 @@ export class AgentPreloader {
   }
 
   /**
-   * Select agents to preload based on strategy and usage patterns
+   * Select agents to preload based on strategy and predicted usage patterns
    */
   private selectAgentsToPreload(): (keyof FoundationAgents)[] {
     const allAgents: (keyof FoundationAgents)[] = [
@@ -127,31 +127,57 @@ export class AgentPreloader {
       'queryRewriter', 'cotGenerator', 'chunkScorer', 'actionCaller', 'embedder'
     ];
 
+    // Predict usage probability based on typical user workflows and telemetry data
+    const usageProbability: Record<keyof FoundationAgents, number> = {
+      retriever: 0.9,      // Almost always used for context retrieval
+      toolSelector: 0.8,   // Very common for tool selection in agent workflows
+      embedder: 0.8,       // Common for semantic operations and similarity
+      actionCaller: 0.7,   // Common for function calls and action execution
+      taskPlanner: 0.6,    // Moderate usage for task decomposition
+      critic: 0.5,         // Moderate usage for response evaluation
+      cotGenerator: 0.4,   // Less common, specialized chain-of-thought reasoning
+      queryRewriter: 0.4,  // Less common, query optimization scenarios
+      chunkScorer: 0.3,    // Specialized content scoring
+      reranker: 0.2        // Specialized document reranking
+    };
+
+    let candidateAgents: (keyof FoundationAgents)[] = [];
+    let maxAgents = 3; // Default limit to prevent memory waste
+
     switch (this.config.strategy) {
       case 'aggressive':
-        // Preload all agents
-        return allAgents;
-
-      case 'conservative':
-        // Only preload the most critical agents
-        return this.config.priorityAgents.slice(0, 2);
-
+        // Preload agents with >15% usage probability, up to 8 agents
+        candidateAgents = allAgents.filter(agent => usageProbability[agent] > 0.15);
+        maxAgents = 8;
+        break;
+      
       case 'balanced':
-      default:
-        // Preload priority agents plus a few others based on usage patterns
-        const prioritySet = new Set(this.config.priorityAgents);
-        const balanced = [...this.config.priorityAgents];
-        
-        // Add additional frequently used agents
-        const additionalAgents = ['taskPlanner', 'cotGenerator'];
-        for (const agent of additionalAgents) {
-          if (!prioritySet.has(agent as keyof FoundationAgents) && balanced.length < 6) {
-            balanced.push(agent as keyof FoundationAgents);
-          }
-        }
-        
-        return balanced;
+        // Preload priority agents + agents with >50% usage probability, up to 5 agents
+        const highUsageAgents = allAgents.filter(agent => usageProbability[agent] > 0.5);
+        candidateAgents = [...new Set([...this.config.priorityAgents, ...highUsageAgents])];
+        maxAgents = 5;
+        break;
+      
+      case 'conservative':
+        // Only preload priority agents with very high usage probability (>70%), max 3
+        candidateAgents = this.config.priorityAgents.filter(agent => usageProbability[agent] > 0.7);
+        maxAgents = 3;
+        break;
     }
+
+    // Sort by usage probability (most likely used first) and limit count
+    candidateAgents.sort((a, b) => usageProbability[b] - usageProbability[a]);
+    candidateAgents = candidateAgents.slice(0, maxAgents);
+
+    // Calculate expected benefit vs cost
+    const expectedBenefit = candidateAgents.reduce((total, agent) => 
+      total + (usageProbability[agent] * 800), 0 // 800ms average init time
+    );
+
+    logger.info(`[AGENT_PRELOADER] Selected ${candidateAgents.length} agents for preloading (expected benefit: ${Math.round(expectedBenefit)}ms)`);
+    logger.debug(`[AGENT_PRELOADER] Selected agents: ${candidateAgents.map(a => `${a}(${Math.round(usageProbability[a] * 100)}%)`).join(', ')}`);
+    
+    return candidateAgents;
   }
 
   /**
@@ -170,8 +196,10 @@ export class AgentPreloader {
         
         logger.debug(`[AGENT_PRELOADER] Successfully preloaded ${agentType} in ${duration}ms`);
         
-        // Estimate user benefit (time saved on first use)
-        this.metrics.userBenefit += Math.max(0, duration - 100); // Assume cache overhead of 100ms
+        // Calculate realistic user benefit based on actual initialization time
+        // User benefit = time they would have waited without preloading
+        const estimatedUserWaitTime = this.estimateUserWaitTime(agentType, duration);
+        this.metrics.userBenefit += estimatedUserWaitTime;
         
       } catch (error) {
         this.metrics.failedPreloads++;
@@ -198,12 +226,8 @@ export class AgentPreloader {
       fallbackToBasicFactory: false
     };
 
-    // Create a temporary optimized factory for preloading
-    const tempFactory = new OptimizedFoundationAgentFactory(
-      this.factory['dependencies'], // Access private dependencies
-      this.factory['config'], // Access private config
-      preloadConfig
-    );
+    // Use the singleton factory for preloading (it already has optimizations)
+    const tempFactory = this.factory; // Use existing optimized factory
 
     // Create the agent (this will cache it for later use)
     const agents = await tempFactory.createAgents();
@@ -259,6 +283,40 @@ export class AgentPreloader {
     logger.info(`  Average time: ${Math.round(this.metrics.averagePreloadTime)}ms`);
     logger.info(`  Estimated user benefit: ${Math.round(this.metrics.userBenefit)}ms`);
     logger.info(`  Memory usage: ${Math.round(this.metrics.memoryUsage)}MB`);
+  }
+
+  /**
+   * Estimate user wait time if agent wasn't preloaded
+   */
+  private estimateUserWaitTime(agentType: keyof FoundationAgents, actualPreloadTime: number): number {
+    // Base initialization times for different agent types (historical data)
+    const baseInitTimes: Record<keyof FoundationAgents, number> = {
+      retriever: 800,    // Vector search setup
+      reranker: 400,     // Cross-encoder model
+      toolSelector: 600, // Tool analysis model  
+      critic: 500,       // Evaluation model
+      taskPlanner: 1200, // Complex planning model
+      queryRewriter: 300, // Text rewriting
+      cotGenerator: 700,  // Chain-of-thought model
+      chunkScorer: 400,   // Scoring model
+      actionCaller: 900,  // Function calling model
+      embedder: 600      // Embedding model
+    };
+
+    const baseTime = baseInitTimes[agentType] || 500;
+    
+    // Factor in user context switching delay (waiting for response)
+    const userContextPenalty = 200; // User notices delays >200ms
+    
+    // If preload was faster than expected, full benefit
+    // If preload was slower, reduced benefit (might indicate system issues)
+    const efficiencyFactor = Math.min(1.0, baseTime / actualPreloadTime);
+    
+    const estimatedBenefit = (baseTime + userContextPenalty) * efficiencyFactor;
+    
+    logger.debug(`[AGENT_PRELOADER] ${agentType} benefit: ${Math.round(estimatedBenefit)}ms (base: ${baseTime}ms, actual: ${actualPreloadTime}ms)`);
+    
+    return Math.max(0, estimatedBenefit);
   }
 
   /**

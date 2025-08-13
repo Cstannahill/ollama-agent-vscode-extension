@@ -2,7 +2,7 @@
  * Provider-Specific Optimization for Foundation Pipeline
  * 
  * Optimizes pipeline execution based on provider capabilities and characteristics.
- * Routes different stages to the most suitable provider (Ollama vs vLLM).
+ * Routes different stages to the most suitable provider (Ollama vs LMDeploy).
  */
 
 import { logger } from "../../../utils/logger";
@@ -82,9 +82,9 @@ export class ProviderOptimizer {
       }
     });
 
-    // vLLM capabilities
-    this.capabilities.set("vllm", {
-      provider: "vllm",
+    // LMDeploy capabilities
+    this.capabilities.set("lmdeploy", {
+      provider: "lmdeploy",
       strengths: [
         "High-throughput batch processing",
         "Optimized GPU utilization",
@@ -121,19 +121,19 @@ export class ProviderOptimizer {
     // Stage 1: Query Expansion (Light computational load, benefits from speed)
     this.optimizations.set("query_expansion", {
       stage: "query_expansion",
-      recommendedProvider: "vllm",
-      reason: "Fast text generation for query expansion benefits from vLLM's optimized inference",
+      recommendedProvider: "lmdeploy",
+      reason: "Fast text generation for query expansion benefits from LMDeploy's optimized inference",
       confidence: 0.8,
       fallbackProvider: "ollama",
       batchingEnabled: true,
       parallelization: false
     });
 
-    // Stage 2: Retrieval (Embedding-heavy, perfect for vLLM)
+    // Stage 2: Retrieval (Embedding-heavy, perfect for LMDeploy)
     this.optimizations.set("retrieval", {
       stage: "retrieval",
-      recommendedProvider: "vllm",
-      reason: "Embedding generation and similarity scoring optimized for vLLM's batch processing",
+      recommendedProvider: "lmdeploy",
+      reason: "Embedding generation and similarity scoring optimized for LMDeploy's batch processing",
       confidence: 0.9,
       fallbackProvider: "ollama",
       batchingEnabled: true,
@@ -143,8 +143,8 @@ export class ProviderOptimizer {
     // Stage 3: Reranking (Batch processing benefits)
     this.optimizations.set("reranking", {
       stage: "reranking",
-      recommendedProvider: "vllm",
-      reason: "Cross-encoder reranking benefits from vLLM's efficient batch inference",
+      recommendedProvider: "lmdeploy",
+      reason: "Cross-encoder reranking benefits from LMDeploy's efficient batch inference",
       confidence: 0.85,
       fallbackProvider: "ollama",
       batchingEnabled: true,
@@ -157,7 +157,7 @@ export class ProviderOptimizer {
       recommendedProvider: "ollama",
       reason: "Tool selection requires structured JSON output, Ollama's strength",
       confidence: 0.9,
-      fallbackProvider: "vllm",
+      fallbackProvider: "lmdeploy",
       batchingEnabled: false,
       parallelization: false
     });
@@ -168,7 +168,7 @@ export class ProviderOptimizer {
       recommendedProvider: "ollama",
       reason: "Complex task planning benefits from Ollama's reliable reasoning chains",
       confidence: 0.85,
-      fallbackProvider: "vllm",
+      fallbackProvider: "lmdeploy",
       batchingEnabled: false,
       parallelization: false
     });
@@ -179,16 +179,16 @@ export class ProviderOptimizer {
       recommendedProvider: "ollama",
       reason: "Chain-of-thought reasoning requires reliable step-by-step processing",
       confidence: 0.75,
-      fallbackProvider: "vllm",
+      fallbackProvider: "lmdeploy",
       batchingEnabled: false,
       parallelization: false
     });
 
-    // Stage 7: Chunk Scoring (Batch-friendly, vLLM advantage)
+    // Stage 7: Chunk Scoring (Batch-friendly, LMDeploy advantage)
     this.optimizations.set("chunk_scoring", {
       stage: "chunk_scoring",
-      recommendedProvider: "vllm",
-      reason: "Scoring multiple chunks benefits from vLLM's batch processing efficiency",
+      recommendedProvider: "lmdeploy",
+      reason: "Scoring multiple chunks benefits from LMDeploy's batch processing efficiency",
       confidence: 0.8,
       fallbackProvider: "ollama",
       batchingEnabled: true,
@@ -201,7 +201,7 @@ export class ProviderOptimizer {
       recommendedProvider: "ollama",
       reason: "Action generation with tool calls requires structured output reliability",
       confidence: 0.9,
-      fallbackProvider: "vllm",
+      fallbackProvider: "lmdeploy",
       batchingEnabled: false,
       parallelization: false
     });
@@ -209,8 +209,8 @@ export class ProviderOptimizer {
     // Stage 9: Evaluation (Analysis task, balanced approach)
     this.optimizations.set("evaluation", {
       stage: "evaluation",
-      recommendedProvider: "vllm",
-      reason: "Evaluation and critique can benefit from vLLM's faster inference",
+      recommendedProvider: "lmdeploy",
+      reason: "Evaluation and critique can benefit from LMDeploy's faster inference",
       confidence: 0.7,
       fallbackProvider: "ollama",
       batchingEnabled: false,
@@ -223,7 +223,7 @@ export class ProviderOptimizer {
       recommendedProvider: "ollama",
       reason: "Final response generation benefits from Ollama's conversational strengths",
       confidence: 0.8,
-      fallbackProvider: "vllm",
+      fallbackProvider: "lmdeploy",
       batchingEnabled: false,
       parallelization: false
     });
@@ -367,13 +367,13 @@ export class ProviderOptimizer {
       .map(opt => opt.stage);
     
     const vllmStages = Array.from(this.optimizations.values())
-      .filter(opt => opt.recommendedProvider === "vllm")
+      .filter(opt => opt.recommendedProvider === "lmdeploy")
       .map(opt => opt.stage);
 
     // Provider balance analysis
     if (ollamaStages.length > vllmStages.length * 2) {
       recommendations.push(
-        "Consider enabling vLLM for more stages to improve overall throughput"
+        "Consider enabling LMDeploy for more stages to improve overall throughput"
       );
     }
 

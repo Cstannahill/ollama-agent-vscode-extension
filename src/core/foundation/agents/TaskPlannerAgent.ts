@@ -60,21 +60,8 @@ export class TaskPlannerAgent implements ITaskPlannerAgent {
     try {
       logger.info("[TASK_PLANNER_AGENT] Initializing task planner agent...");
       
-      // Test LLM connection with timeout and graceful fallback
-      try {
-        const testResponse = await Promise.race([
-          this.llm.generateText("Create a simple 2-step plan for organizing files"),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("LLM test timeout")), 5000)
-          )
-        ]);
-        logger.debug("[TASK_PLANNER_AGENT] LLM connection test successful");
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 
-          (typeof error === 'object' && error !== null) ? JSON.stringify(error) : String(error);
-        logger.warn(`[TASK_PLANNER_AGENT] LLM test failed, continuing with degraded functionality: ${errorMessage}`);
-        // Don't throw here - allow the agent to initialize with limited functionality
-      }
+      // Skip LLM test during initialization to prevent timeouts - test on first use instead
+      logger.debug("[TASK_PLANNER_AGENT] LLM connection will be tested on first use");
       
       this.initialized = true;
       logger.info("[TASK_PLANNER_AGENT] Task planner agent initialized successfully");
@@ -227,18 +214,29 @@ export class TaskPlannerAgent implements ITaskPlannerAgent {
 **Task to Plan:** "${prompt}"
 ${contextInfo}
 
+**CRITICAL: Path and File Name Accuracy**
+When the user specifies exact file paths or directories (like "src/app/register" or "page.tsx"), you MUST preserve these exactly as specified. Do not change or interpret them.
+
+**Path Parsing Examples:**
+- "create a new directory at src/app called register" → directory: "src/app/register"
+- "create a file page.tsx" → filename: "page.tsx"
+- Combined: full path should be "src/app/register/page.tsx"
+
 **Planning Framework (CAMEL-AI Style):**
 
 1. **Goal Analysis**: Break down the main objective
-2. **Step Decomposition**: Identify all necessary sub-tasks
-3. **Dependency Mapping**: Determine execution order and prerequisites
-4. **Resource Assessment**: Consider available tools and constraints
-5. **Risk Analysis**: Identify potential failure points
-6. **Success Metrics**: Define clear completion criteria
+2. **Path Extraction**: If user specifies exact paths/filenames, extract and preserve them exactly
+3. **Step Decomposition**: Identify all necessary sub-tasks with correct paths
+4. **Dependency Mapping**: Determine execution order (create directories before files)
+5. **Resource Assessment**: Consider available tools and constraints
+6. **Risk Analysis**: Identify potential failure points
+7. **Success Metrics**: Define clear completion criteria
 
 **AutoGPT Planning Principles:**
 - Each step should be atomic and verifiable
-- Include clear action types and parameters
+- Preserve exact file paths and names from user input
+- Include directory creation before file creation if needed
+- Include clear action types and parameters with accurate paths
 - Estimate realistic timeframes
 - Consider parallel execution opportunities
 - Plan for error handling and recovery

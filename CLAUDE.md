@@ -5,12 +5,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development Commands
 
 - **Build/Compile**: `npm run compile` or `tsc -p ./`
-- **Watch mode**: `npm run watch` - compiles TypeScript automatically on changes
+- **Watch mode**: `npm run watch` - compiles TypeScript automatically on changes  
 - **Lint**: `npm run lint` - runs ESLint on src files
 - **Test**: `npm run test` - runs all tests (requires pretest compilation and linting)
 - **Package for publishing**: `npm run vscode:prepublish`
 
 The extension uses TypeScript and compiles to the `out/` directory. **Use pnpm for package management** to avoid dependency conflicts with ChromaDB and other dependencies.
+
+## Critical System Architecture Patterns
+
+### Singleton Factories with Thread Safety
+Both `FoundationAgentFactory` and `OptimizedFoundationAgentFactory` implement singleton patterns with thread-safe creation locks to prevent race conditions and infinite initialization loops:
+
+```typescript
+// Thread-safe singleton with instance key validation
+public static getInstance(dependencies?: FoundationAgentDependencies): FoundationAgentFactory {
+  const newKey = dependencies ? `${dependencies.ollamaUrl}|${dependencies.model}` : 'default';
+  if (FoundationAgentFactory.instance && FoundationAgentFactory.instanceKey === newKey) {
+    return FoundationAgentFactory.instance;
+  }
+  // Create new instance with configuration validation
+}
+```
+
+### Parameter Enhancement System  
+The `ActionCallerAgent` includes sophisticated parameter enhancement to fix undefined/missing tool parameters:
+
+```typescript
+// Context-aware parameter inference for tools like file_write
+private enhanceParameters(toolId: string, parameters: any, originalPlan: TaskStep): any {
+  if (toolId === 'file_write' && !parameters.filePath) {
+    parameters.filePath = this.inferFilePathFromTask(originalPlan);
+  }
+  if (!parameters.content && toolId === 'file_write') {
+    parameters.content = this.inferContentFromTask(originalPlan);  
+  }
+}
+```
+
+### Pipeline Dependency Management
+The foundation pipeline uses strict stage dependencies to ensure proper execution order:
+
+```typescript
+this.stages.set('tool_selection', {
+  dependencies: ['expand'], // Depends on query expansion stage
+  // NOT ['query_rewriting'] - this was causing pipeline failures
+});
+```
 
 ## Architecture Overview
 
@@ -80,22 +121,34 @@ This is a VS Code extension that provides an intelligent coding agent powered by
 - Semantic search with filtering by language, framework, and source
 - Supports both public documentation access and private knowledge management
 
-**Ollama Integration** (`src/api/ollama.ts`):
+**LLM Provider System** (`src/api/`):
 
-- Handles communication with local Ollama server
-- Configurable model and server URL
-- Text generation and model listing capabilities
-- `QuantizedModelManager`: Advanced model management with quantization support
+- **Ollama Integration** (`ollama.ts`): Local Ollama server communication with tool calling support
+- **LMDeploy Integration** (`lmdeploy.ts`): High-performance LMDeploy server integration for enhanced throughput (1.8x faster than vLLM)
+- **LLM Router** (`llm-router.ts`): Intelligent provider routing with task-specific preferences:
+  - Chat tasks: Auto-routing based on performance (LMDeploy preferred for high throughput)
+  - Embeddings: Prefers LMDeploy for batch processing  
+  - Tool calling: Prefers Ollama for reliability
+  - Foundation pipeline: Prefers LMDeploy for concurrent inference
+  - Fallback mechanisms with configurable timeouts
+- **QuantizedModelManager**: Advanced model management with quantization support
+- **LMDeployServerManager** (`src/services/`): Auto-startup and lifecycle management for LMDeploy Python server
 - Support for multiple quantization levels (q4_0, q4_1, q5_0, q5_1, q8_0, f16, f32)
 
-**Chat Interface** (`src/views/`):
+**UI System** (`src/views/`):
 
-- `ChatPanel.ts`: Advanced webview-based chat interface with structured agentic flow display
-- Collapsible thinking sections with muted styling
-- Action indicators with tool icons, descriptions, and status results
-- Progressive message updates and real-time action streaming
-- Export and clear chat functionality
-- `SidebarProvider.ts`: Activity bar integration with quick access to chat features
+- **`ChatPanel.ts`**: Advanced webview-based chat interface with structured agentic flow display
+  - Collapsible thinking sections with muted styling
+  - Action indicators with tool icons, descriptions, and status results
+  - Progressive message updates and real-time action streaming
+  - Export and clear chat functionality
+- **`SidebarProvider.ts`**: Activity bar integration with multiple specialized views
+- **`FoundationModelsPanel.ts`**: Foundation agent model configuration interface
+- **`DocumentationPanel.ts`**: Documentation hub for knowledge base management
+- **`ProjectDashboard.ts`**: Project analysis and context visualization
+- **`ContextVisualizationPanel.ts`**: Interactive context and memory visualization
+- **`ProjectContextPanel.ts`**: Workspace context analysis and management
+- **`SettingsPanel.ts`**: Extension configuration and preferences
 
 **VS Code Integration** (`src/extension.ts`, `src/commands/`):
 
@@ -116,6 +169,37 @@ This is a VS Code extension that provides an intelligent coding agent powered by
 - **Context Management**: Multi-strategy context retrieval with semantic search and relevance scoring
 - **Memory Persistence**: SQLite-based long-term memory with consolidation strategies
 
+## LMDeploy Server Integration
+
+### Architecture
+The extension integrates with a companion Python server (`src/lmdeploy-server/`) that provides LMDeploy inference with an Ollama-compatible API. This server offers 1.8x higher throughput than vLLM and is optimized for foundation agent concurrent workloads.
+
+### Critical Implementation Details
+
+**Auto-Startup System**: `LMDeployServerManager` automatically manages the Python server lifecycle:
+- **Virtual Environment**: Must use `.venv/bin/python` from the lmdeploy-server directory
+- **Uvicorn Command**: Spawns `uvicorn app.server:app --port 11435 --host 0.0.0.0`
+- **Extension Context**: Requires `context.extensionPath` for proper path resolution
+- **Health Monitoring**: Status bar integration with 30-second health checks
+- **Configuration Reactive**: Auto-restart when settings change
+
+**Server Structure**:
+```
+src/lmdeploy-server/
+├── .venv/                    # Virtual environment (required)
+├── app/
+│   ├── server.py            # FastAPI application with Ollama-compatible API
+│   ├── model_manager.py     # LMDeploy model loading and caching
+│   └── config.py           # Server configuration with pydantic-settings
+├── requirements.txt         # Python dependencies
+└── README.md               # Server documentation
+```
+
+**Server Commands**:
+- Start: `source .venv/bin/activate && uvicorn app.server:app --port 11435`
+- Install deps: `pip install -r requirements.txt`
+- Environment setup: Set `LMDEPLOY_*` environment variables for configuration
+
 ### Extension Points
 
 To add new capabilities:
@@ -125,20 +209,24 @@ To add new capabilities:
 3. **New Command**: Add to `package.json` contributes.commands, implement in `src/commands/`
 4. **New Chat UI Feature**: Extend `ChatPanel.ts` with new message types or interactions
 5. **New View**: Add to `package.json` views/viewsContainers, implement provider in `src/views/`
+6. **LMDeploy Server**: Modify `app/server.py` for new endpoints, ensure virtual environment compatibility
 
 ### Important Files
 
 **Foundation Architecture:**
-- `FOUNDATION-ARCHITECTURE.md`: Complete foundation system documentation
+- `docs/FOUNDATION-ARCHITECTURE.md`: Complete foundation system documentation
 - `src/agents/FoundationBasicAgent.ts`: Primary agent with integrated foundation pipeline
-- `src/core/foundation/FoundationPipeline.ts`: 10-stage pipeline orchestrator
-- `src/core/foundation/FoundationAgentFactory.ts`: Foundation agent creation and management
+- `src/core/foundation/FoundationPipeline.ts`: 10-stage pipeline orchestrator with singleton patterns
+- `src/core/foundation/FoundationAgentFactory.ts`: Thread-safe singleton factory for foundation agents
+- `src/core/foundation/OptimizedFoundationAgentFactory.ts`: Performance-optimized factory with caching
 - `src/core/foundation/IFoundationAgent.ts`: Foundation agent interfaces and types
 - `src/core/foundation/agents/RetrieverAgent.ts`: BGE/E5/GTE style semantic retrieval
 - `src/core/foundation/agents/RerankerAgent.ts`: Cross-encoder document scoring
 - `src/core/foundation/agents/TaskPlannerAgent.ts`: CAMEL-AI/AutoGPT task planning
 - `src/core/foundation/agents/CoTGeneratorAgent.ts`: Chain-of-thought reasoning
-- `src/core/foundation/agents/ActionCallerAgent.ts`: Function-call tuned action generation
+- `src/core/foundation/agents/ActionCallerAgent.ts`: Function-call tuned action generation with parameter enhancement
+- `src/core/foundation/agents/ToolSelectorAgent.ts`: DPO-style tool classification with intelligent ranking
+- `src/core/foundation/agents/EmbedderAgent.ts`: Vector operations with deterministic embedding generation
 
 **Core System:**
 - `src/extension.ts`: Extension entry point and activation
@@ -158,7 +246,10 @@ To add new capabilities:
 - `src/core/ParallelToolExecutor.ts`: Parallel tool execution with intelligent scheduling
 - `src/views/ChatPanel.ts`: Advanced chat interface with agentic flow visualization
 - `src/views/SidebarProvider.ts`: Activity bar sidebar integration
-- `src/api/ollama.ts`: Ollama server communication with tool calling support
+- `src/api/ollama.ts`: Ollama server communication with tool calling support  
+- `src/api/lmdeploy.ts`: LMDeploy server integration for superior performance (1.8x faster than vLLM)
+- `src/api/llm-router.ts`: Intelligent LLM provider routing with fallback mechanisms
+- `src/services/LMDeployServerManager.ts`: Auto-startup and lifecycle management for LMDeploy Python server
 - `package.json`: Extension manifest with commands, views, and configuration
 
 ## Agent Specialization System
@@ -318,6 +409,14 @@ interface AgentResponse {
 - `ollamaAgent.performance.maxConcurrency`: Maximum parallel tool executions (default: 3)
 - `ollamaAgent.model.quantized`: Use quantized model variant (default: false)
 - `ollamaAgent.model.quantization`: Quantization level (q4_0, q4_1, q5_0, q5_1, q8_0, f16, f32)
+- `ollamaAgent.lmdeploy.enabled`: Enable LMDeploy integration for superior performance (default: false)
+- `ollamaAgent.lmdeploy.serverUrl`: LMDeploy server URL (default: http://localhost:11435)
+- `ollamaAgent.lmdeploy.model`: LMDeploy model path/name for inference
+- `ollamaAgent.lmdeploy.engineType`: Engine type ('turbomind' for performance, 'pytorch' for compatibility)
+- `ollamaAgent.routing.chatPreference`: Preferred provider for chat (ollama/lmdeploy/auto)
+- `ollamaAgent.routing.embeddingPreference`: Preferred provider for embeddings (lmdeploy recommended for batch processing)
+- `ollamaAgent.routing.enableFallback`: Enable fallback to alternative provider (default: true)
+- `ollamaAgent.foundation.models.*`: Per-agent model configuration for all 10 foundation agents
 
 ## 🧠 General Principles
 

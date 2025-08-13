@@ -1,6 +1,7 @@
 """
-vLLM FastAPI Server
+LMDeploy FastAPI Server
 Compatible with Ollama API endpoints for seamless integration
+Provides superior performance and throughput compared to vLLM
 """
 
 import asyncio
@@ -16,12 +17,13 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 try:
-    from vllm import SamplingParams
+    import lmdeploy
+    from lmdeploy import pipeline, GenerationConfig
 
-    VLLM_AVAILABLE = True
+    LMDEPLOY_AVAILABLE = True
 except ImportError:
-    SamplingParams = None
-    VLLM_AVAILABLE = False
+    GenerationConfig = None
+    LMDEPLOY_AVAILABLE = False
 
 from .config import config, ModelConfig
 from .model_manager import model_manager
@@ -32,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 # FastAPI app
 app = FastAPI(
-    title="vLLM Server",
-    description="vLLM server with Ollama-compatible API",
+    title="LMDeploy Server",
+    description="LMDeploy server with Ollama-compatible API",
     version="1.0.0",
 )
 
@@ -96,17 +98,22 @@ class ModelsResponse(BaseModel):
     models: List[ModelInfo]
 
 
-def create_sampling_params(options: Dict) -> Optional[SamplingParams]:
-    """Create vLLM SamplingParams from Ollama-style options"""
-    if not VLLM_AVAILABLE:
-        return None
+from typing import Any
 
-    return SamplingParams(
+
+def create_generation_config(options: Any) -> Optional[Any]:
+    """Create LMDeploy GenerationConfig from Ollama-style options"""
+    if not LMDEPLOY_AVAILABLE or GenerationConfig is None:
+        return None
+    # Ensure options is always a dict
+    if options is None:
+        options = {}
+    return GenerationConfig(
         temperature=options.get("temperature", 0.7),
         top_p=options.get("top_p", 0.9),
         top_k=options.get("top_k", 40),
-        max_tokens=options.get("num_predict", 512),
-        stop=options.get("stop", []),
+        max_new_tokens=options.get("num_predict", 512),
+        stop_words=options.get("stop", []),
     )
 
 
@@ -129,9 +136,9 @@ def format_prompt_from_messages(messages: List[ChatMessage]) -> str:
 async def root():
     """Root endpoint"""
     return {
-        "message": "vLLM Server - Ollama Compatible API",
+        "message": "LMDeploy Server - Ollama Compatible API",
         "version": "1.0.0",
-        "vllm_available": VLLM_AVAILABLE,
+        "lmdeploy_available": LMDEPLOY_AVAILABLE,
     }
 
 
@@ -163,37 +170,35 @@ async def list_models():
 @app.post("/api/generate")
 async def generate(request: GenerateRequest):
     """Generate text (Ollama compatible)"""
-    if not VLLM_AVAILABLE:
-        raise HTTPException(status_code=503, detail="vLLM not available")
+    if not LMDEPLOY_AVAILABLE:
+        raise HTTPException(status_code=503, detail="LMDeploy not available")
 
     start_time = time.time()
 
     try:
-        sampling_params = create_sampling_params(request.options)
-
+        generation_config = create_generation_config(
+            request.options if request.options is not None else {}
+        )
         if request.stream:
             return StreamingResponse(
                 generate_stream(
-                    request.model, request.prompt, sampling_params, start_time
+                    request.model, request.prompt, generation_config, start_time
                 ),
                 media_type="application/json",
             )
         else:
             # Non-streaming generation
             response_text = await model_manager.generate_text(
-                request.model, request.prompt, sampling_params
+                request.model, request.prompt, generation_config
             )
-
             if response_text is None:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Failed to generate text with model {request.model}",
                 )
-
             total_duration = int(
                 (time.time() - start_time) * 1000
             )  # Convert to milliseconds
-
             return GenerateResponse(
                 model=request.model,
                 created_at=datetime.now().isoformat(),
@@ -203,19 +208,18 @@ async def generate(request: GenerateRequest):
                 eval_count=len(response_text.split()),  # Rough token count
                 eval_duration=total_duration,
             )
-
     except Exception as e:
         logger.error(f"Generation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 async def generate_stream(
-    model_name: str, prompt: str, sampling_params, start_time: float
+    model_name: str, prompt: str, generation_config, start_time: float
 ) -> AsyncGenerator[str, None]:
     """Stream generation responses"""
     try:
         stream = await model_manager.generate_stream(
-            model_name, prompt, sampling_params
+            model_name, prompt, generation_config
         )
 
         if stream is None:
@@ -269,34 +273,32 @@ async def generate_stream(
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """Chat endpoint (Ollama compatible)"""
-    if not VLLM_AVAILABLE:
-        raise HTTPException(status_code=503, detail="vLLM not available")
+    if not LMDEPLOY_AVAILABLE:
+        raise HTTPException(status_code=503, detail="LMDeploy not available")
 
     start_time = time.time()
 
     try:
         # Convert messages to prompt
         prompt = format_prompt_from_messages(request.messages)
-        sampling_params = create_sampling_params(request.options)
-
+        generation_config = create_generation_config(
+            request.options if request.options is not None else {}
+        )
         if request.stream:
             return StreamingResponse(
-                chat_stream(request.model, prompt, sampling_params, start_time),
+                chat_stream(request.model, prompt, generation_config, start_time),
                 media_type="application/json",
             )
         else:
             # Non-streaming chat
             response_text = await model_manager.generate_text(
-                request.model, prompt, sampling_params
+                request.model, prompt, generation_config
             )
-
             if response_text is None:
                 raise HTTPException(
                     status_code=500, detail=f"Failed to chat with model {request.model}"
                 )
-
             total_duration = int((time.time() - start_time) * 1000)
-
             return ChatResponse(
                 model=request.model,
                 created_at=datetime.now().isoformat(),
@@ -306,19 +308,18 @@ async def chat(request: ChatRequest):
                 eval_count=len(response_text.split()),
                 eval_duration=total_duration,
             )
-
     except Exception as e:
         logger.error(f"Chat failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 async def chat_stream(
-    model_name: str, prompt: str, sampling_params, start_time: float
+    model_name: str, prompt: str, generation_config, start_time: float
 ) -> AsyncGenerator[str, None]:
     """Stream chat responses"""
     try:
         stream = await model_manager.generate_stream(
-            model_name, prompt, sampling_params
+            model_name, prompt, generation_config
         )
 
         if stream is None:
@@ -379,8 +380,8 @@ async def get_status():
 async def load_model(model_name: str):
     """Manually load a model"""
     try:
-        engine = await model_manager.load_model(model_name)
-        if engine:
+        pipe = await model_manager.load_model(model_name)
+        if pipe:
             return {
                 "status": "success",
                 "message": f"Model {model_name} loaded successfully",
@@ -412,12 +413,12 @@ async def unload_model(model_name: str):
 @app.on_event("startup")
 async def startup_event():
     """Server startup event"""
-    logger.info("vLLM Server starting up...")
+    logger.info("LMDeploy Server starting up...")
     logger.info(f"Server will run on {config.host}:{config.port}")
-    logger.info(f"vLLM available: {VLLM_AVAILABLE}")
+    logger.info(f"LMDeploy available: {LMDEPLOY_AVAILABLE}")
 
     # Optionally preload default model
-    if VLLM_AVAILABLE and config.default_model:
+    if LMDEPLOY_AVAILABLE and config.default_model:
         try:
             await model_manager.load_model(config.default_model)
             logger.info(f"Preloaded default model: {config.default_model}")
@@ -428,13 +429,13 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Server shutdown event"""
-    logger.info("vLLM Server shutting down...")
+    logger.info("LMDeploy Server shutting down...")
 
     # Cleanup loaded models
     for model_name in model_manager.list_loaded_models():
         model_manager.unload_model(model_name)
 
-    logger.info("vLLM Server shutdown complete")
+    logger.info("LMDeploy Server shutdown complete")
 
 
 if __name__ == "__main__":

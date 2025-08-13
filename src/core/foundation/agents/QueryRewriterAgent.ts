@@ -91,7 +91,9 @@ export class QueryRewriterAgent implements IQueryRewriterAgent {
     try {
       logger.debug(`[QUERY_REWRITER_AGENT] Expanding query: ${shortQuery}`);
 
-      const expansionPrompt = this.buildExpansionPrompt(shortQuery, context);
+      // Enhance context with workspace information to prevent over-expansion
+      const enhancedContext = this.buildWorkspaceAwareContext(shortQuery, context);
+      const expansionPrompt = this.buildExpansionPrompt(shortQuery, enhancedContext);
       const response = await this.llm.generateText(expansionPrompt);
 
       const expandedQuery = this.parseExpansionResponse(response, shortQuery);
@@ -166,35 +168,74 @@ export class QueryRewriterAgent implements IQueryRewriterAgent {
   }
 
   /**
+   * Build workspace-aware context to prevent over-expansion
+   */
+  private buildWorkspaceAwareContext(shortQuery: string, context?: string): string {
+    let workspaceContext = context || '';
+    
+    // Detect existing project structure indicators
+    const projectIndicators = [
+      'src/app', 'src/components', 'src/pages',
+      'app/', 'components/', 'pages/',
+      'package.json', 'next.config', 'tsconfig',
+      'tailwind.config', 'eslint', 'prettier'
+    ];
+    
+    const hasProjectStructure = projectIndicators.some(indicator => 
+      shortQuery.toLowerCase().includes(indicator.toLowerCase())
+    );
+    
+    if (hasProjectStructure) {
+      workspaceContext += `\n\nWORKSPACE CONTEXT: The user is working within an existing project with established structure. Do not add project creation or setup steps.`;
+    }
+    
+    // Detect framework indicators
+    if (shortQuery.toLowerCase().includes('page.tsx') || shortQuery.toLowerCase().includes('next')) {
+      workspaceContext += `\n\nFRAMEWORK: This appears to be a Next.js project with TypeScript. Focus on component creation within existing structure.`;
+    }
+    
+    if (shortQuery.toLowerCase().includes('tailwind')) {
+      workspaceContext += `\n\nSTYLING: Tailwind CSS is already configured. Focus on utility classes and component styling.`;
+    }
+    
+    return workspaceContext;
+  }
+
+  /**
    * Build query expansion prompt
    */
   private buildExpansionPrompt(shortQuery: string, context?: string): string {
     const contextSection = context ? `
 **Additional Context:** ${context}` : '';
 
-    return `You are a query expansion expert. Transform this short query into a comprehensive, detailed version.
+    return `You are a query expansion expert. Transform this short query into a more detailed version while staying faithful to the original intent.
 
 **Short Query:** "${shortQuery}"
 ${contextSection}
 
-**Expansion Guidelines:**
-1. **Intent Recognition**: Identify what the user is really looking for
-2. **Keyword Expansion**: Add relevant synonyms, related terms, and technical vocabulary
-3. **Concept Identification**: Extract main concepts and themes
-4. **Context Addition**: Add implied context and background information
-5. **Specificity**: Make vague terms more specific and actionable
+**CRITICAL EXPANSION RULES:**
+1. **Stay Faithful**: Do NOT add information that isn't explicitly stated or clearly implied
+2. **No Assumptions**: Do not assume project setup, folder structures, or create new requirements
+3. **Preserve Scope**: If the task mentions existing files/folders (like "src/app"), assume they exist - don't create new projects
+4. **Conservative Enhancement**: Only add technical details that directly relate to the stated request
 
-**Analysis Framework:**
-- What domain/field does this query relate to?
-- What are the key concepts and their relationships?
-- What synonyms and related terms should be included?
-- What context is implied but not explicitly stated?
-- What would make this query more effective for search?
+**Expansion Guidelines:**
+1. **Intent Recognition**: Identify exactly what the user is asking for
+2. **Technical Clarification**: Add relevant technical terms and best practices 
+3. **Implementation Details**: Include specific implementation approaches mentioned or implied
+4. **Keyword Enhancement**: Add synonyms and related technical vocabulary
+5. **Quality Standards**: Include relevant quality/styling requirements if mentioned
+
+**WHAT NOT TO DO:**
+- Do not add project creation steps if not requested
+- Do not assume missing infrastructure needs to be built
+- Do not expand scope beyond the original request
+- Do not add steps for setting up environments unless asked
 
 **Respond in JSON format:**
 {
   "original": "${shortQuery}",
-  "expanded": "Detailed, comprehensive version of the query with added context and keywords",
+  "expanded": "Enhanced version that clarifies and adds technical detail WITHOUT changing scope",
   "keywords": ["extracted", "keywords", "and", "key", "terms"],
   "concepts": ["main_concept_1", "main_concept_2", "related_concept"],
   "intent": "specific_intent_category",
@@ -306,10 +347,14 @@ ${contextSection}
 
     if (parseResult.success) {
       const data = parseResult.data;
+      let expanded = data.expanded || originalQuery;
+      
+      // Detect and correct over-expansion
+      expanded = this.correctOverExpansion(originalQuery, expanded);
       
       return {
         original: originalQuery,
-        expanded: data.expanded || originalQuery,
+        expanded: expanded,
         keywords: Array.isArray(data.keywords) ? data.keywords : this.extractSimpleKeywords(originalQuery),
         concepts: Array.isArray(data.concepts) ? data.concepts : [originalQuery],
         intent: data.intent || "general_search",
@@ -319,6 +364,75 @@ ${contextSection}
 
     // Fallback expansion
     return this.fallbackExpansion(response, originalQuery);
+  }
+
+  /**
+   * Detect and correct over-expansion that adds unwanted scope
+   */
+  private correctOverExpansion(originalQuery: string, expanded: string): string {
+    const overExpansionPatterns = [
+      // Project creation patterns when original doesn't mention it
+      /create a .*? project/gi,
+      /set up a .*? project/gi,
+      /initialize a .*? project/gi,
+      /build a new .*? project/gi,
+      // Workspace setup when not requested
+      /workspace folder/gi,
+      /project structure/gi,
+      // Environment setup when not requested  
+      /configure.*environment/gi,
+      /install.*dependencies/gi,
+      /setup.*development/gi
+    ];
+    
+    let corrected = expanded;
+    const originalLower = originalQuery.toLowerCase();
+    
+    // Only apply corrections if original doesn't contain project setup keywords
+    const setupKeywords = ['create project', 'new project', 'setup project', 'initialize project'];
+    const originalHasSetup = setupKeywords.some(keyword => originalLower.includes(keyword));
+    
+    if (!originalHasSetup) {
+      // Remove over-expansion patterns
+      for (const pattern of overExpansionPatterns) {
+        // Check if the pattern exists in expanded but not in original
+        if (pattern.test(corrected) && !pattern.test(originalQuery)) {
+          logger.debug(`[QUERY_REWRITER_AGENT] Correcting over-expansion pattern: ${pattern}`);
+          // Remove sentences containing these patterns
+          corrected = corrected.replace(new RegExp(`[^.]*${pattern.source}[^.]*\.?`, 'gi'), '');
+        }
+      }
+      
+      // Clean up any resulting formatting issues
+      corrected = corrected.replace(/\s+/g, ' ').trim();
+      corrected = corrected.replace(/\.\s*\./g, '.');
+      
+      // If we removed too much, fall back to a conservative expansion
+      if (corrected.length < originalQuery.length * 1.2) {
+        corrected = this.createConservativeExpansion(originalQuery);
+      }
+    }
+    
+    return corrected || originalQuery;
+  }
+
+  /**
+   * Create a conservative expansion that stays close to the original
+   */
+  private createConservativeExpansion(originalQuery: string): string {
+    const queryLower = originalQuery.toLowerCase();
+    let expansion = originalQuery;
+    
+    // Add minimal technical context based on what's mentioned
+    if (queryLower.includes('page.tsx')) {
+      expansion = `${originalQuery}. Implement as a TypeScript React component with proper file structure.`;
+    } else if (queryLower.includes('tailwind')) {
+      expansion = `${originalQuery}. Use Tailwind CSS utility classes for styling and responsive design.`;
+    } else if (queryLower.includes('directory') && queryLower.includes('file')) {
+      expansion = `${originalQuery}. Create the directory structure and file with appropriate content.`;
+    }
+    
+    return expansion;
   }
 
   /**

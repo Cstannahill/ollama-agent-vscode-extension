@@ -102,7 +102,7 @@ export class CodeReviewAgent extends BaseAgent {
         vectorDatabase: this.vectorDB
       };
 
-      this.foundationFactory = new FoundationAgentFactory(
+      this.foundationFactory = FoundationAgentFactory.getInstance(
         dependencies,
         this.reviewConfig.foundationConfig || {}
       );

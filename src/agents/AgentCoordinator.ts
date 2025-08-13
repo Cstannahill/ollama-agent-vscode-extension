@@ -613,16 +613,26 @@ export class AgentCoordinator {
     const startTime = Date.now();
 
     try {
-      const agent = this.agentFactory.getAgent(task.agentType);
+      // Get agent with automatic initialization and timeout
+      logger.info(`[AGENT_COORDINATOR] Getting agent for task: ${task.id} (${task.agentType})`);
+      const agent = await Promise.race([
+        this.agentFactory.getAgent(task.agentType),
+        new Promise<undefined>((_, reject) => 
+          setTimeout(() => reject(new Error(`Agent factory timeout for ${task.agentType}`)), 30000)
+        )
+      ]);
+      
       if (!agent) {
-        throw new Error(`Agent ${task.agentType} not available`);
+        throw new Error(`Agent ${task.agentType} not available after initialization`);
       }
 
-      const result = await agent.executeTask(
-        task.description,
-        undefined,
-        progressCallback
-      );
+      logger.info(`[AGENT_COORDINATOR] Executing task with agent: ${task.id} (${task.agentType})`);
+      const result = await Promise.race([
+        agent.executeTask(task.description, undefined, progressCallback),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error(`Task execution timeout for ${task.id}`)), 60000)
+        )
+      ]);
       const duration = Date.now() - startTime;
 
       return {
@@ -634,7 +644,16 @@ export class AgentCoordinator {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      logger.error(`[AGENT_COORDINATOR] Task ${task.id} failed:`, error);
+      logger.error(`[AGENT_COORDINATOR] Task ${task.id} (${task.agentType}) failed:`, error);
+      logger.error(`[AGENT_COORDINATOR] Task details: ${JSON.stringify({
+        taskId: task.id,
+        description: task.description,
+        agentType: task.agentType,
+        dependencies: task.dependencies,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorStack: error instanceof Error ? error.stack : 'No stack trace',
+        factoryStatus: 'initialized'
+      }, null, 2)}`);
 
       return {
         taskId: task.id,

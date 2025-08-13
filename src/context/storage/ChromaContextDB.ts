@@ -410,8 +410,13 @@ export class ChromaContextDB {
               }
             }
           }
-        } catch (collectionError) {
-          logger.debug(`[CHROMA_CONTEXT_DB] Search failed in collection ${collectionKey}:`, collectionError);
+        } catch (collectionError: any) {
+          // Handle ChromaValueError specifically (common with empty collections or invalid queries)
+          if (collectionError.name === 'ChromaValueError' || collectionError.message?.includes('ChromaValueError')) {
+            logger.debug(`[CHROMA_CONTEXT_DB] Search failed in collection ${collectionKey}: ${collectionError.name} (likely empty collection or invalid query)`);
+          } else {
+            logger.debug(`[CHROMA_CONTEXT_DB] Search failed in collection ${collectionKey}:`, collectionError);
+          }
         }
       }
 

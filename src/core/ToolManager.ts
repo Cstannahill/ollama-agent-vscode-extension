@@ -86,15 +86,31 @@ import {
   DebugSessionTool,
 } from "../tools/DebuggingTool";
 import { logger } from "../utils/logger";
+import { CacheManager, SmartCache } from "./cache/CacheManager";
+import { PersistentCache } from "./cache/PersistentCache";
 
 /**
  * Central manager for all tools available to the agent
  */
 export class ToolManager {
   private tools: Map<string, BaseTool> = new Map();
+  private cache: SmartCache<any>;
+  private cacheManager: CacheManager;
+  private persistentCache: PersistentCache;
 
   constructor() {
+    this.cacheManager = CacheManager.getInstance();
+    this.persistentCache = PersistentCache.getInstance();
+    this.cache = this.cacheManager.getCache('tools', {
+      maxSize: 200, // Increased capacity for more tools
+      maxMemoryMB: 20, // More memory for tool descriptions (170KB+)
+      defaultTTLMs: 3600000, // 1 hour (was 5 minutes causing churn)
+      enableLRU: true,
+      enableStats: true
+    });
+    
     this.registerDefaultTools();
+    logger.info("[TOOL_MANAGER] Initialized with smart caching and persistence system");
   }
 
   /**
@@ -200,6 +216,10 @@ export class ToolManager {
     }
 
     this.tools.set(tool.name, tool);
+    // Invalidate relevant caches when tools change
+    this.cache.delete('tool_descriptions');
+    this.cache.delete('tool_names');
+    this.cache.delete('tool_count');
     logger.debug(`Registered tool: ${tool.name}`);
   }
 
@@ -209,6 +229,10 @@ export class ToolManager {
   unregisterTool(toolName: string): boolean {
     const removed = this.tools.delete(toolName);
     if (removed) {
+      // Invalidate relevant caches when tools change
+      this.cache.delete('tool_descriptions');
+      this.cache.delete('tool_names');
+      this.cache.delete('tool_count');
       logger.debug(`Unregistered tool: ${toolName}`);
     }
     return removed;
@@ -229,25 +253,42 @@ export class ToolManager {
   }
 
   /**
-   * Get tool names
+   * Get tool names (cached)
    */
   getToolNames(): string[] {
-    return Array.from(this.tools.keys());
+    const cached = this.cache.get('tool_names');
+    if (cached !== null) {
+      return cached as string[];
+    }
+
+    const names = Array.from(this.tools.keys());
+    logger.debug(`[TOOL_MANAGER] Generated tool names cache (${names.length} tools)`);
+    this.cache.set('tool_names', names);
+    return names;
   }
 
   /**
-   * Get tool descriptions for prompting
+   * Get tool descriptions for prompting (smart cached)
    */
   getToolDescriptions(): Array<{
     name: string;
     description: string;
     schema: any;
   }> {
-    return this.getAllTools().map((tool) => ({
+    const cached = this.cache.get('tool_descriptions');
+    if (cached !== null) {
+      return cached as Array<{ name: string; description: string; schema: any; }>;
+    }
+
+    const descriptions = this.getAllTools().map((tool) => ({
       name: tool.name,
       description: tool.description,
       schema: tool.schema,
     }));
+    
+    logger.debug(`[TOOL_MANAGER] Generated tool descriptions cache (${descriptions.length} tools)`);
+    this.cache.set('tool_descriptions', descriptions);
+    return descriptions;
   }
 
   /**
@@ -302,12 +343,45 @@ export class ToolManager {
   }
 
   /**
-   * Get formatted tool information for LLM prompts
+   * Get formatted tool information for LLM prompts (lazy-loaded full set with persistence)
+   */
+  async getToolsForPromptAsync(): Promise<string> {
+    const cacheKey = 'full_tools_for_prompt';
+    
+    // Use persistent cache to avoid regenerating 170KB+ prompt across sessions
+    return await this.persistentCache.getOrCompute(
+      cacheKey,
+      () => {
+        logger.info("[TOOL_MANAGER] Generating full tools prompt (170KB+) - expensive operation");
+        return this.generateFullToolsPrompt();
+      },
+      14400000 // 4 hours persistent TTL
+    );
+  }
+
+  /**
+   * Synchronous version (lazy-loaded, cached in memory + persistent)
    */
   getToolsForPrompt(): string {
-    const tools = this.getAllTools();
+    const cached = this.cache.get('tools_for_prompt');
+    if (cached !== null) {
+      return cached as string;
+    }
 
-    return tools
+    logger.info("[TOOL_MANAGER] Lazy-loading full tools prompt (170KB+) - first use only");
+    
+    const prompt = this.generateFullToolsPrompt();
+    
+    // Cache both in memory and persistent storage
+    this.cache.set('tools_for_prompt', prompt, 14400000);
+    this.persistentCache.set('full_tools_for_prompt', prompt, 14400000);
+    
+    return prompt;
+  }
+
+  private generateFullToolsPrompt(): string {
+    const tools = this.getAllTools();
+    const prompt = tools
       .map((tool) => {
         const schemaString = JSON.stringify(tool.schema, null, 2);
         return `Tool: ${tool.name}
@@ -316,6 +390,138 @@ Schema: ${schemaString}
 ---`;
       })
       .join("\n");
+    
+    const promptSize = Math.round(prompt.length / 1024);
+    logger.info(`[TOOL_MANAGER] Generated full tools prompt (${tools.length} tools, ${promptSize}KB)`);
+    return prompt;
+  }
+
+  /**
+   * Get tool count (cached)
+   */
+  getToolCount(): number {
+    const cached = this.cache.get('tool_count');
+    if (cached !== null) {
+      return cached as number;
+    }
+
+    const count = this.tools.size;
+    logger.debug(`[TOOL_MANAGER] Generated tool count cache (${count} tools)`);
+    this.cache.set('tool_count', count);
+    return count;
+  }
+
+  /**
+   * Get cache statistics
+   */
+  getCacheStats() {
+    return this.cache.getStats();
+  }
+
+  /**
+   * Clear all caches
+   */
+  clearCache(): void {
+    this.cache.clear();
+    logger.info("[TOOL_MANAGER] Cleared all tool caches");
+  }
+
+  /**
+   * Warm up caches with core tools only (avoid 170KB+ prompt generation)
+   */
+  warmupCache(): void {
+    // Only precompute lightweight data on startup
+    this.getToolNames();
+    this.getToolCount();
+    
+    // Generate core tools prompt (not all 57 tools)
+    this.getCoreToolsForPrompt();
+    
+    logger.info("[TOOL_MANAGER] Cache warmed up with core tools (lazy-loading extended tools)");
+  }
+
+  /**
+   * Get core essential tools for immediate use (persistent cached)
+   */
+  async getCoreToolsForPromptAsync(): Promise<string> {
+    const cacheKey = 'core_tools_for_prompt';
+    
+    // Try persistent cache first (survives VS Code restarts)
+    return await this.persistentCache.getOrCompute(
+      cacheKey,
+      () => this.generateCoreToolsPrompt(),
+      14400000 // 4 hours persistent TTL
+    );
+  }
+
+  /**
+   * Synchronous version for backward compatibility
+   */
+  getCoreToolsForPrompt(): string {
+    const cached = this.cache.get('core_tools_for_prompt');
+    if (cached !== null) {
+      return cached as string;
+    }
+
+    const prompt = this.generateCoreToolsPrompt();
+    
+    // Cache both in memory and persistent storage
+    this.cache.set('core_tools_for_prompt', prompt, 14400000);
+    this.persistentCache.set('core_tools_for_prompt', prompt, 14400000);
+    
+    return prompt;
+  }
+
+  private generateCoreToolsPrompt(): string {
+    // Core tools that should be immediately available
+    const coreToolNames = [
+      'file_read', 'file_write', 'file_list', 'file_append',
+      'run_shell', 'vscode_command', 'open_file',
+      'git_status', 'git_add', 'git_commit', 'git_diff',
+      'test_runner', 'eslint', 'prettier',
+      'package_install', 'http_request'
+    ];
+
+    const coreTools = coreToolNames
+      .map(name => this.getTool(name))
+      .filter(tool => tool !== undefined) as BaseTool[];
+
+    const prompt = coreTools
+      .map((tool) => {
+        const schemaString = JSON.stringify(tool.schema, null, 2);
+        return `Tool: ${tool.name}
+Description: ${tool.description}
+Schema: ${schemaString}
+---`;
+      })
+      .join("\n");
+    
+    const promptSize = Math.round(prompt.length / 1024);
+    logger.info(`[TOOL_MANAGER] Generated core tools prompt (${coreTools.length}/${this.tools.size} tools, ${promptSize}KB)`);
+    return prompt;
+  }
+
+  /**
+   * Get tools for prompt based on context (core vs full)
+   */
+  getToolsForPromptByContext(context: 'startup' | 'core' | 'full' = 'full'): string {
+    switch (context) {
+      case 'startup':
+      case 'core':
+        return this.getCoreToolsForPrompt();
+      case 'full':
+        return this.getToolsForPrompt();
+      default:
+        return this.getCoreToolsForPrompt();
+    }
+  }
+
+  /**
+   * Cleanup and destroy resources
+   */
+  destroy(): void {
+    this.cache.destroy();
+    logger.info("[TOOL_MANAGER] Destroyed tool manager and caches");
   }
 }
 

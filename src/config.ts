@@ -8,22 +8,24 @@ export interface ExtensionConfig {
   maxIterations: number;
   verbose: boolean;
   
-  // vLLM configuration
-  vllm: {
+  // LMDeploy configuration
+  lmdeploy: {
     enabled: boolean;
     serverUrl: string;
     model: string;
-    maxModelLen: number;
+    sessionLen: number;
+    maxBatchSize: number;
     tensorParallelSize: number;
-    gpuMemoryUtilization: number;
+    cacheMaxEntryCount: number;
+    engineType: 'turbomind' | 'pytorch';
   };
   
   // Routing configuration
   routing: {
-    chatPreference: "ollama" | "vllm" | "auto";
-    embeddingPreference: "ollama" | "vllm" | "auto";
-    toolCallingPreference: "ollama" | "vllm" | "auto";
-    batchProcessingPreference: "ollama" | "vllm" | "auto";
+    chatPreference: "ollama" | "lmdeploy" | "auto";
+    embeddingPreference: "ollama" | "lmdeploy" | "auto";
+    toolCallingPreference: "ollama" | "lmdeploy" | "auto";
+    batchProcessingPreference: "ollama" | "lmdeploy" | "auto";
     preferSpeed: boolean;
     enableFallback: boolean;
     fallbackTimeout: number;
@@ -31,7 +33,7 @@ export interface ExtensionConfig {
   
   // Foundation pipeline optimization
   foundation: {
-    enableVLLMOptimization: boolean;
+    enableLMDeployOptimization: boolean;
     models: {
       retriever: string;
       reranker: string;
@@ -101,22 +103,24 @@ export function getConfig(): ExtensionConfig {
     maxIterations: config.get<number>("maxIterations") || 10,
     verbose: config.get<boolean>("verbose") || false,
     
-    // vLLM configuration
-    vllm: {
-      enabled: config.get<boolean>("vllm.enabled") || false,
-      serverUrl: config.get<string>("vllm.serverUrl") || "http://localhost:11435",
-      model: config.get<string>("vllm.model") || "microsoft/DialoGPT-medium",
-      maxModelLen: config.get<number>("vllm.maxModelLen") || 2048,
-      tensorParallelSize: config.get<number>("vllm.tensorParallelSize") || 1,
-      gpuMemoryUtilization: config.get<number>("vllm.gpuMemoryUtilization") || 0.9,
+    // LMDeploy configuration
+    lmdeploy: {
+      enabled: config.get<boolean>("lmdeploy.enabled") || false,
+      serverUrl: config.get<string>("lmdeploy.serverUrl") || "http://localhost:11435",
+      model: config.get<string>("lmdeploy.model") || "internlm/internlm2_5-7b-chat",
+      sessionLen: config.get<number>("lmdeploy.sessionLen") || 2048,
+      maxBatchSize: config.get<number>("lmdeploy.maxBatchSize") || 8,
+      tensorParallelSize: config.get<number>("lmdeploy.tensorParallelSize") || 1,
+      cacheMaxEntryCount: config.get<number>("lmdeploy.cacheMaxEntryCount") || 0.8,
+      engineType: config.get<'turbomind' | 'pytorch'>("lmdeploy.engineType") || 'turbomind',
     },
     
     // Routing configuration
     routing: {
-      chatPreference: config.get<"ollama" | "vllm" | "auto">("routing.chatPreference") || "auto",
-      embeddingPreference: config.get<"ollama" | "vllm" | "auto">("routing.embeddingPreference") || "vllm",
-      toolCallingPreference: config.get<"ollama" | "vllm" | "auto">("routing.toolCallingPreference") || "ollama",
-      batchProcessingPreference: config.get<"ollama" | "vllm" | "auto">("routing.batchProcessingPreference") || "vllm",
+      chatPreference: config.get<"ollama" | "lmdeploy" | "auto">("routing.chatPreference") || "auto",
+      embeddingPreference: config.get<"ollama" | "lmdeploy" | "auto">("routing.embeddingPreference") || "lmdeploy",
+      toolCallingPreference: config.get<"ollama" | "lmdeploy" | "auto">("routing.toolCallingPreference") || "ollama",
+      batchProcessingPreference: config.get<"ollama" | "lmdeploy" | "auto">("routing.batchProcessingPreference") || "lmdeploy",
       preferSpeed: config.get<boolean>("routing.preferSpeed") || true,
       enableFallback: config.get<boolean>("routing.enableFallback") || true,
       fallbackTimeout: config.get<number>("routing.fallbackTimeout") || 10000,
@@ -124,7 +128,7 @@ export function getConfig(): ExtensionConfig {
     
     // Foundation pipeline optimization
     foundation: {
-      enableVLLMOptimization: config.get<boolean>("foundation.enableVLLMOptimization") || true,
+      enableLMDeployOptimization: config.get<boolean>("foundation.enableLMDeployOptimization") ?? false,
       models: {
         retriever: config.get<string>("foundation.models.retriever") || "",
         reranker: config.get<string>("foundation.models.reranker") || "",
@@ -200,6 +204,10 @@ export const CONSTANTS = {
     OPEN_CONTEXT_VISUALIZATION: "ollamaAgent.contextVisualization",
     OPEN_PROJECT_CONTEXT: "ollamaAgent.projectContext",
     OPEN_FOUNDATION_MODELS: "ollamaAgent.foundationModels",
+    LMDEPLOY_STATUS: "ollamaAgent.lmdeployStatus",
+    LMDEPLOY_START: "ollamaAgent.lmdeployStart",
+    LMDEPLOY_STOP: "ollamaAgent.lmdeployStop",
+    LMDEPLOY_RESTART: "ollamaAgent.lmdeployRestart",
   },
 
   // Default prompts

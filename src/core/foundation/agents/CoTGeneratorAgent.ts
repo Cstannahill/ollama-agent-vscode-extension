@@ -60,21 +60,8 @@ export class CoTGeneratorAgent implements ICoTGeneratorAgent {
     try {
       logger.info("[COT_GENERATOR_AGENT] Initializing CoT generator agent...");
       
-      // Test LLM connection with timeout and graceful fallback
-      try {
-        const testResponse = await Promise.race([
-          this.llm.generateText("Think step by step: What is 2+2?"),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("LLM test timeout")), 5000)
-          )
-        ]);
-        logger.debug("[COT_GENERATOR_AGENT] LLM connection test successful");
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 
-          (typeof error === 'object' && error !== null) ? JSON.stringify(error) : String(error);
-        logger.warn(`[COT_GENERATOR_AGENT] LLM test failed, continuing with degraded functionality: ${errorMessage}`);
-        // Don't throw here - allow the agent to initialize with limited functionality
-      }
+      // Skip LLM test during initialization to prevent timeouts - test on first use instead
+      logger.debug("[COT_GENERATOR_AGENT] LLM connection will be tested on first use");
       
       this.initialized = true;
       logger.info("[COT_GENERATOR_AGENT] CoT generator agent initialized successfully");

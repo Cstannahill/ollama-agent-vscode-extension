@@ -137,6 +137,15 @@ export class DocumentationPanel {
           case "debugCollection":
             await this._handleDebugCollection();
             break;
+          case "forceReinitializeDB":
+            await this._handleForceReinitializeDB();
+            break;
+          case "testCloudAccess":
+            await this._handleTestCloudAccess();
+            break;
+          case "toggleCategory":
+            await this._handleToggleCategory(message.category, message.enabled);
+            break;
         }
       },
       null,
@@ -393,11 +402,11 @@ export class DocumentationPanel {
         isEnabled: true,
       },
       {
-        name: "vLLM",
-        displayName: "vLLM",
-        icon: "⚡",
-        url: "https://docs.vllm.ai/",
-        description: "vLLM fast and efficient LLM serving engine",
+        name: "LMDeploy",
+        displayName: "LMDeploy",
+        icon: "🚀",
+        url: "https://lmdeploy.readthedocs.io/en/latest/",
+        description: "LMDeploy - Superior LLM serving engine with 1.8x better performance than vLLM",
         category: "AI/ML Tools",
         isEnabled: true,
       },
@@ -560,11 +569,54 @@ export class DocumentationPanel {
     }
   }
 
+  private async _handleToggleCategory(
+    category: string,
+    enabled: boolean
+  ): Promise<void> {
+    // Find all sources in the category and toggle them
+    const categorySources = this._sources.filter((s) => s.category === category);
+    
+    for (const source of categorySources) {
+      source.isEnabled = enabled;
+    }
+
+    // Send update to webview
+    this._sendCategoryToggled(category, enabled, categorySources.length);
+    
+    logger.info(`[DOC_PANEL] Toggled category ${category}: ${enabled ? 'enabled' : 'disabled'} ${categorySources.length} sources`);
+  }
+
   private async _handleDebugCollection(): Promise<void> {
     try {
       await this._vectorDb.debugCollection();
     } catch (error) {
       logger.error("[DOC_PANEL] Failed to debug collection:", error);
+    }
+  }
+
+  private async _handleForceReinitializeDB(): Promise<void> {
+    try {
+      logger.info("[DOC_PANEL] Force reinitializing VectorDatabase...");
+      await this._vectorDb.forceReinitialize();
+      await this._loadSourceStats();
+      this._sendSourceStats();
+      this._sendUpdateComplete(0, 0); // Signal UI that operation is complete
+    } catch (error) {
+      logger.error("[DOC_PANEL] Failed to force reinitialize database:", error);
+      this._sendError("Failed to reinitialize database connection");
+    }
+  }
+
+  private async _handleTestCloudAccess(): Promise<void> {
+    try {
+      logger.info("[DOC_PANEL] Testing cloud ChromaDB access...");
+      await this._vectorDb.testCloudAccess();
+      await this._loadSourceStats(); // Refresh stats after test
+      this._sendSourceStats();
+      this._sendUpdateComplete(0, 0); // Signal UI that operation is complete
+    } catch (error) {
+      logger.error("[DOC_PANEL] Failed to test cloud access:", error);
+      this._sendError("Failed to test cloud access");
     }
   }
 
@@ -740,6 +792,16 @@ export class DocumentationPanel {
   private _sendSearchHistoryCleared(): void {
     this._panel.webview.postMessage({
       command: "searchHistoryCleared",
+    });
+  }
+
+  private _sendCategoryToggled(category: string, enabled: boolean, affectedCount: number): void {
+    this._panel.webview.postMessage({
+      command: "categoryToggled",
+      category,
+      enabled,
+      affectedCount,
+      sources: this._sources, // Send updated sources
     });
   }
 
@@ -1027,6 +1089,10 @@ export class DocumentationPanel {
             padding: 8px 12px;
             background-color: var(--vscode-button-secondaryBackground);
             border-radius: 6px;
+        }
+
+        .category-toggle {
+            margin-left: 8px;
         }
 
         .category-header h3 {
@@ -1342,6 +1408,8 @@ export class DocumentationPanel {
             <div class="header-actions">
                 <button class="btn btn-secondary" onclick="refreshStats()">Refresh Stats</button>
                 <button class="btn btn-secondary" onclick="debugCollection()">Debug Collection</button>
+                <button class="btn btn-secondary" onclick="forceReinitializeDB()">Reinit DB</button>
+                <button class="btn btn-secondary" onclick="testCloudAccess()">Test Cloud</button>
                 <button class="btn" onclick="updateAllSources()">Update All</button>
             </div>
         </div>
@@ -1497,6 +1565,12 @@ export class DocumentationPanel {
                     searchHistory = [];
                     renderSearchHistory();
                     break;
+                case 'categoryToggled':
+                    sources = message.sources;
+                    renderSources();
+                    populateSourceFilter();
+                    showCategoryToggleSuccess(message.category, message.enabled, message.affectedCount);
+                    break;
             }
         });
 
@@ -1529,11 +1603,16 @@ export class DocumentationPanel {
 
                 const enabledCount = categorySources.filter(s => s.isEnabled).length;
                 const totalDocs = categorySources.reduce((sum, s) => sum + (s.documentCount || 0), 0);
+                const allEnabled = enabledCount === categorySources.length;
 
                 return '<div class="category-section">' +
                     '<div class="category-header">' +
                     '<span>' + (categoryIcons[categoryName] || '📁') + '</span>' +
                     '<h3>' + categoryName + '</h3>' +
+                    '<label class="toggle-switch category-toggle" title="Toggle all sources in ' + categoryName + '">' +
+                    '<input type="checkbox" ' + (allEnabled ? 'checked' : '') + ' onchange="toggleCategory(\\'' + categoryName + '\\', this.checked)">' +
+                    '<span class="toggle-slider"></span>' +
+                    '</label>' +
                     '<span class="category-count">' + enabledCount + '/' + categorySources.length + ' active • ' + totalDocs + ' docs</span>' +
                     '</div>' +
                     '<div class="sources-grid">' +
@@ -1666,6 +1745,14 @@ export class DocumentationPanel {
             });
         }
 
+        function toggleCategory(category, enabled) {
+            vscode.postMessage({
+                command: 'toggleCategory',
+                category: category,
+                enabled: enabled
+            });
+        }
+
         function updateSourceToggle(sourceName, enabled) {
             const source = sources.find(s => s.name === sourceName);
             if (source) {
@@ -1692,6 +1779,18 @@ export class DocumentationPanel {
         function debugCollection() {
             vscode.postMessage({
                 command: 'debugCollection'
+            });
+        }
+
+        function forceReinitializeDB() {
+            vscode.postMessage({
+                command: 'forceReinitializeDB'
+            });
+        }
+
+        function testCloudAccess() {
+            vscode.postMessage({
+                command: 'testCloudAccess'
             });
         }
 
@@ -1761,6 +1860,21 @@ export class DocumentationPanel {
 
         function showError(message) {
             alert('Error: ' + message);
+        }
+
+        function showCategoryToggleSuccess(category, enabled, affectedCount) {
+            const action = enabled ? 'enabled' : 'disabled';
+            const message = action + ' ' + affectedCount + ' sources in ' + category + ' category';
+            
+            // Show a temporary success message
+            const indicator = document.getElementById('refreshIndicator');
+            indicator.innerHTML = '<span>✅</span><span class="refresh-status">' + message + '</span>';
+            indicator.style.opacity = '1';
+            
+            setTimeout(function() {
+                indicator.innerHTML = '<span>🔄</span><span class="refresh-status" id="refreshStatus">Auto-refresh active</span>';
+                indicator.style.opacity = '0.8';
+            }, 3000);
         }
 
         function formatDate(date) {

@@ -1,19 +1,19 @@
 /**
- * Health Check Service for vLLM Integration
+ * Health Check Service for LMDeploy Integration
  * 
- * Provides comprehensive health monitoring for both Ollama and vLLM providers,
+ * Provides comprehensive health monitoring for both Ollama and LMDeploy providers,
  * including connectivity checks, performance benchmarks, and alerting.
  */
 
 import { logger } from "../../utils/logger";
 import { OllamaLLM } from "../../api/ollama";
-import { VLLMLLM } from "../../api/vllm";
+import { LMDeployLLM } from "../../api/lmdeploy";
 import { LLMRouter } from "../../api/llm-router";
 import { PerformanceMonitor, HealthCheckResult } from "./PerformanceMonitor";
 import chalk from "chalk";
 
 export interface ServiceHealth {
-  provider: 'ollama' | 'vllm';
+  provider: 'ollama' | 'lmdeploy';
   status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
   checks: {
     connectivity: HealthCheckResult;
@@ -37,7 +37,7 @@ export interface HealthAlert {
   severity: 'info' | 'warning' | 'error' | 'critical';
   message: string;
   timestamp: Date;
-  provider?: 'ollama' | 'vllm';
+  provider?: 'ollama' | 'lmdeploy';
   resolved?: boolean;
 }
 
@@ -46,7 +46,7 @@ export interface HealthAlert {
  */
 export class HealthCheckService {
   private ollamaLLM?: OllamaLLM;
-  private vllmLLM?: VLLMLLM;
+  private lmdeployLLM?: LMDeployLLM;
   private router?: LLMRouter;
   private performanceMonitor?: PerformanceMonitor;
   
@@ -60,12 +60,12 @@ export class HealthCheckService {
 
   constructor(
     ollamaLLM?: OllamaLLM,
-    vllmLLM?: VLLMLLM,
+    lmdeployLLM?: LMDeployLLM,
     router?: LLMRouter,
     performanceMonitor?: PerformanceMonitor
   ) {
     this.ollamaLLM = ollamaLLM;
-    this.vllmLLM = vllmLLM;
+    this.lmdeployLLM = lmdeployLLM;
     this.router = router;
     this.performanceMonitor = performanceMonitor;
   }
@@ -122,9 +122,9 @@ export class HealthCheckService {
     }
 
     // Check vLLM health
-    if (this.vllmLLM) {
-      const vllmHealth = await this.checkServiceHealth('vllm', this.vllmLLM);
-      services.push(vllmHealth);
+    if (this.lmdeployLLM) {
+      const lmdeployHealth = await this.checkServiceHealth('lmdeploy', this.lmdeployLLM);
+      services.push(lmdeployHealth);
     }
 
     // Determine overall health
@@ -153,8 +153,8 @@ export class HealthCheckService {
    * Check health of a specific service
    */
   private async checkServiceHealth(
-    provider: 'ollama' | 'vllm', 
-    service: OllamaLLM | VLLMLLM
+    provider: 'ollama' | 'lmdeploy', 
+    service: OllamaLLM | LMDeployLLM
   ): Promise<ServiceHealth> {
     const checks: ServiceHealth['checks'] = {
       connectivity: await this.checkConnectivity(provider, service),
@@ -163,11 +163,11 @@ export class HealthCheckService {
     };
 
     // Add resource usage check for vLLM (if supported)
-    if (provider === 'vllm' && service instanceof VLLMLLM) {
+    if (provider === 'lmdeploy' && service instanceof LMDeployLLM) {
       try {
         checks.resourceUsage = await this.checkResourceUsage(service);
       } catch (error) {
-        logger.debug("[HEALTH_CHECK] Resource usage check not supported for vLLM");
+        logger.debug("[HEALTH_CHECK] Resource usage check not supported for LMDeploy");
       }
     }
 
@@ -220,8 +220,8 @@ export class HealthCheckService {
    * Check basic connectivity
    */
   private async checkConnectivity(
-    provider: 'ollama' | 'vllm',
-    service: OllamaLLM | VLLMLLM
+    provider: 'ollama' | 'lmdeploy',
+    service: OllamaLLM | LMDeployLLM
   ): Promise<HealthCheckResult> {
     const startTime = Date.now();
     
@@ -254,8 +254,8 @@ export class HealthCheckService {
    * Check performance with a test request
    */
   private async checkPerformance(
-    provider: 'ollama' | 'vllm',
-    service: OllamaLLM | VLLMLLM
+    provider: 'ollama' | 'lmdeploy',
+    service: OllamaLLM | LMDeployLLM
   ): Promise<HealthCheckResult> {
     const startTime = Date.now();
     
@@ -312,8 +312,8 @@ export class HealthCheckService {
    * Check model access and availability
    */
   private async checkModelAccess(
-    provider: 'ollama' | 'vllm',
-    service: OllamaLLM | VLLMLLM
+    provider: 'ollama' | 'lmdeploy',
+    service: OllamaLLM | LMDeployLLM
   ): Promise<HealthCheckResult> {
     const startTime = Date.now();
     
@@ -361,13 +361,13 @@ export class HealthCheckService {
   }
 
   /**
-   * Check resource usage (vLLM specific)
+   * Check resource usage (LMDeploy specific)
    */
-  private async checkResourceUsage(service: VLLMLLM): Promise<HealthCheckResult> {
+  private async checkResourceUsage(service: LMDeployLLM): Promise<HealthCheckResult> {
     const startTime = Date.now();
     
     try {
-      // This would require vLLM server to expose resource usage endpoints
+      // This would require LMDeploy server to expose resource usage endpoints
       const status = await service.getServerStatus();
       const latency = Date.now() - startTime;
       
@@ -375,7 +375,7 @@ export class HealthCheckService {
       const available = status !== undefined;
       
       return {
-        provider: 'vllm',
+        provider: 'lmdeploy',
         available,
         latency,
         lastCheck: new Date(),
@@ -385,7 +385,7 @@ export class HealthCheckService {
       const latency = Date.now() - startTime;
       
       return {
-        provider: 'vllm',
+        provider: 'lmdeploy',
         available: false,
         latency,
         error: error instanceof Error ? error.message : String(error),

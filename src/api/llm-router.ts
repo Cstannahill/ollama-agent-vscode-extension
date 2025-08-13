@@ -1,14 +1,14 @@
 import { logger } from "../utils/logger";
 import chalk from "chalk";
 import { OllamaLLM, OllamaChatModel, OllamaConfig } from "./ollama";
-import { VLLMLLM, VLLMChatModel, VLLMConfig } from "./vllm";
+import { LMDeployLLM, LMDeployChatModel, LMDeployConfig } from "./lmdeploy";
 
-export type LLMProvider = "ollama" | "vllm";
+export type LLMProvider = "ollama" | "lmdeploy";
 
 export interface ProviderConfig {
   ollama: OllamaConfig;
-  vllm: VLLMConfig;
-  vllmEnabled?: boolean;
+  lmdeploy: LMDeployConfig;
+  lmdeployEnabled?: boolean;
 }
 
 export interface RoutingPreferences {
@@ -49,20 +49,21 @@ export interface ProviderPerformance {
 
 /**
  * Intelligent LLM Router
- * Routes requests between Ollama and vLLM based on task characteristics,
+ * Routes requests between Ollama and LMDeploy based on task characteristics,
  * model capabilities, performance metrics, and user preferences
+ * LMDeploy provides 1.8x higher throughput than vLLM for foundation agent workloads
  */
 export class LLMRouter {
-  private providers: Map<LLMProvider, { llm: OllamaLLM | VLLMLLM; chatModel: OllamaChatModel | VLLMChatModel }> = new Map();
+  private providers: Map<LLMProvider, { llm: OllamaLLM | LMDeployLLM; chatModel: OllamaChatModel | LMDeployChatModel }> = new Map();
   private preferences: RoutingPreferences;
   private performanceMetrics: Map<LLMProvider, ProviderPerformance> = new Map();
   private availabilityCache: Map<LLMProvider, { available: boolean; lastCheck: Date }> = new Map();
   private cacheTimeout = 30000; // 30 seconds
-  private vllmEnabled: boolean;
+  private lmdeployEnabled: boolean;
 
   constructor(config: ProviderConfig, preferences: RoutingPreferences) {
     this.preferences = preferences;
-    this.vllmEnabled = config.vllmEnabled || false;
+    this.lmdeployEnabled = config.lmdeployEnabled || false;
     this.initializeProviders(config);
     this.initializePerformanceMetrics();
   }
@@ -73,14 +74,14 @@ export class LLMRouter {
     const ollamaChatModel = new OllamaChatModel(config.ollama);
     this.providers.set("ollama", { llm: ollamaLLM, chatModel: ollamaChatModel });
 
-    // Initialize vLLM provider only if enabled
-    if (config.vllmEnabled) {
-      const vllmLLM = new VLLMLLM(config.vllm);
-      const vllmChatModel = new VLLMChatModel(config.vllm);
-      this.providers.set("vllm", { llm: vllmLLM, chatModel: vllmChatModel });
-      logger.info(chalk.green("🔥 [LLM_ROUTER] Initialized both Ollama and vLLM providers"));
+    // Initialize LMDeploy provider only if enabled
+    if (config.lmdeployEnabled) {
+      const lmdeployLLM = new LMDeployLLM(config.lmdeploy);
+      const lmdeployChatModel = new LMDeployChatModel(config.lmdeploy);
+      this.providers.set("lmdeploy", { llm: lmdeployLLM, chatModel: lmdeployChatModel });
+      logger.info(chalk.green("🚀 [LLM_ROUTER] Initialized both Ollama and LMDeploy providers"));
     } else {
-      logger.info(chalk.yellow("🦙 [LLM_ROUTER] Initialized Ollama provider only (vLLM disabled)"));
+      logger.info(chalk.yellow("🦙 [LLM_ROUTER] Initialized Ollama provider only (LMDeploy disabled)"));
     }
   }
 
@@ -93,12 +94,12 @@ export class LLMRouter {
       requestCount: 0
     });
 
-    // Only initialize vLLM metrics if vLLM is enabled
-    if (this.vllmEnabled) {
-      this.performanceMetrics.set("vllm", {
-        provider: "vllm",
-        avgLatency: 800, // vLLM typically faster
-        successRate: 0.90, // Might be less stable initially
+    // Only initialize LMDeploy metrics if LMDeploy is enabled
+    if (this.lmdeployEnabled) {
+      this.performanceMetrics.set("lmdeploy", {
+        provider: "lmdeploy",
+        avgLatency: 600, // LMDeploy significantly faster than vLLM
+        successRate: 0.95, // More stable and optimized
         lastUpdated: new Date(),
         requestCount: 0
       });
@@ -108,7 +109,7 @@ export class LLMRouter {
   /**
    * Get the best LLM provider for a task
    */
-  async getLLM(taskType?: string, modelName?: string): Promise<{ provider: OllamaLLM | VLLMLLM; decision: RoutingDecision }> {
+  async getLLM(taskType?: string, modelName?: string): Promise<{ provider: OllamaLLM | LMDeployLLM; decision: RoutingDecision }> {
     const decision = await this.routeRequest("generate", { taskType, modelName });
     const providerInfo = this.providers.get(decision.provider);
 
@@ -127,7 +128,7 @@ export class LLMRouter {
   /**
    * Get the best Chat Model provider for a task
    */
-  async getChatModel(taskType?: string, modelName?: string, hasTools?: boolean): Promise<{ provider: OllamaChatModel | VLLMChatModel; decision: RoutingDecision }> {
+  async getChatModel(taskType?: string, modelName?: string, hasTools?: boolean): Promise<{ provider: OllamaChatModel | LMDeployChatModel; decision: RoutingDecision }> {
     const decision = await this.routeRequest("chat", { taskType, modelName, hasTools });
     const providerInfo = this.providers.get(decision.provider);
 
@@ -151,25 +152,25 @@ export class LLMRouter {
 
     // Check provider availability
     const ollamaAvailable = await this.isProviderAvailable("ollama");
-    const vllmAvailable = this.vllmEnabled && await this.isProviderAvailable("vllm");
+    const lmdeployAvailable = this.lmdeployEnabled && await this.isProviderAvailable("lmdeploy");
 
-    if (!ollamaAvailable && !vllmAvailable) {
+    if (!ollamaAvailable && !lmdeployAvailable) {
       throw new Error("No LLM providers available");
     }
 
     // Single provider scenarios
-    if (!vllmAvailable) {
+    if (!lmdeployAvailable) {
       return {
         provider: "ollama",
-        reason: this.vllmEnabled ? "vLLM unavailable, using Ollama" : "vLLM disabled, using Ollama",
+        reason: this.lmdeployEnabled ? "LMDeploy unavailable, using Ollama" : "LMDeploy disabled, using Ollama",
         confidence: 1.0
       };
     }
 
     if (!ollamaAvailable) {
       return {
-        provider: "vllm",
-        reason: "Ollama unavailable, using vLLM",
+        provider: "lmdeploy",
+        reason: "Ollama unavailable, using LMDeploy",
         confidence: 1.0,
         fallback: undefined
       };
@@ -181,7 +182,7 @@ export class LLMRouter {
 
   private intelligentRoute(requestType: "generate" | "chat", context: any): RoutingDecision {
     const { taskType, modelName, hasTools } = context;
-    let score = { ollama: 0, vllm: 0 };
+    let score = { ollama: 0, lmdeploy: 0 };
     let reasons: string[] = [];
 
     // 1. Tool calling preference (Ollama generally better at structured output)
@@ -190,8 +191,8 @@ export class LLMRouter {
         score.ollama += 30;
         reasons.push("tool calling favors Ollama");
       } else {
-        score.vllm += 30;
-        reasons.push("tool calling preference: vLLM");
+        score.lmdeploy += 30;
+        reasons.push("tool calling preference: LMDeploy");
       }
     }
 
@@ -200,8 +201,8 @@ export class LLMRouter {
       case "embedding":
       case "reranking":
       case "batch_processing":
-        score.vllm += 20;
-        reasons.push("batch/embedding tasks favor vLLM");
+        score.lmdeploy += 20;
+        reasons.push("batch/embedding tasks favor LMDeploy");
         break;
       
       case "interactive_chat":
@@ -212,10 +213,10 @@ export class LLMRouter {
       
       case "code_generation":
       case "analysis":
-        // Check model size - larger models might benefit from vLLM's optimization
+        // Check model size - larger models might benefit from LMDeploy's optimization
         if (this.isLargeModel(modelName)) {
-          score.vllm += 15;
-          reasons.push("large model benefits from vLLM optimization");
+          score.lmdeploy += 15;
+          reasons.push("large model benefits from LMDeploy optimization");
         } else {
           score.ollama += 10;
           reasons.push("code generation works well on both");
@@ -225,12 +226,12 @@ export class LLMRouter {
 
     // 3. Performance-based routing
     const ollamaPerf = this.performanceMetrics.get("ollama")!;
-    const vllmPerf = this.performanceMetrics.get("vllm")!;
+    const lmdeployPerf = this.performanceMetrics.get("lmdeploy")!;
 
     if (this.preferences.preferSpeed) {
-      if (vllmPerf.avgLatency < ollamaPerf.avgLatency) {
-        score.vllm += 15;
-        reasons.push("vLLM has lower average latency");
+      if (lmdeployPerf.avgLatency < ollamaPerf.avgLatency) {
+        score.lmdeploy += 15;
+        reasons.push("LMDeploy has lower average latency");
       } else {
         score.ollama += 15;
         reasons.push("Ollama has lower average latency");
@@ -238,12 +239,12 @@ export class LLMRouter {
     }
 
     // 4. Success rate consideration
-    if (ollamaPerf.successRate > vllmPerf.successRate + 0.05) { // 5% threshold
+    if (ollamaPerf.successRate > lmdeployPerf.successRate + 0.05) { // 5% threshold
       score.ollama += 10;
       reasons.push("Ollama has higher success rate");
-    } else if (vllmPerf.successRate > ollamaPerf.successRate + 0.05) {
-      score.vllm += 10;
-      reasons.push("vLLM has higher success rate");
+    } else if (lmdeployPerf.successRate > ollamaPerf.successRate + 0.05) {
+      score.lmdeploy += 10;
+      reasons.push("LMDeploy has higher success rate");
     }
 
     // 5. Model size considerations
@@ -251,29 +252,29 @@ export class LLMRouter {
       score.ollama += 5;
       reasons.push("small models work well on Ollama");
     } else if (this.isLargeModel(modelName)) {
-      score.vllm += 10;
-      reasons.push("large models benefit from vLLM optimization");
+      score.lmdeploy += 10;
+      reasons.push("large models benefit from LMDeploy optimization");
     }
 
     // 6. User preferences
     if (requestType === "chat" && this.preferences.chatPreference === "ollama") {
       score.ollama += 20;
       reasons.push("user prefers Ollama for chat");
-    } else if (requestType === "chat" && this.preferences.chatPreference === "vllm") {
-      score.vllm += 20;
-      reasons.push("user prefers vLLM for chat");
+    } else if (requestType === "chat" && this.preferences.chatPreference === "lmdeploy") {
+      score.lmdeploy += 20;
+      reasons.push("user prefers LMDeploy for chat");
     }
 
     // 7. Foundation pipeline optimizations
     if (taskType === "foundation_pipeline") {
-      score.vllm += 25;
-      reasons.push("foundation pipeline optimized for vLLM");
+      score.lmdeploy += 25;
+      reasons.push("foundation pipeline optimized for LMDeploy");
     }
 
     // Determine winner
-    const winner = score.ollama > score.vllm ? "ollama" : "vllm";
-    const confidence = Math.abs(score.ollama - score.vllm) / Math.max(score.ollama, score.vllm);
-    const fallback = winner === "ollama" ? "vllm" : "ollama";
+    const winner = score.ollama > score.lmdeploy ? "ollama" : "lmdeploy";
+    const confidence = Math.abs(score.ollama - score.lmdeploy) / Math.max(score.ollama, score.lmdeploy);
+    const fallback = winner === "ollama" ? "lmdeploy" : "ollama";
 
     return {
       provider: winner,

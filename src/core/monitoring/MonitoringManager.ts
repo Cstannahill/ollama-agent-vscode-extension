@@ -1,13 +1,13 @@
 /**
- * Monitoring Manager for vLLM Integration
+ * Monitoring Manager for LMDeploy Integration
  * 
  * Centralized monitoring system that coordinates performance monitoring
- * and health checks for the entire vLLM integration.
+ * and health checks for the entire LMDeploy integration.
  */
 
 import { logger } from "../../utils/logger";
 import { OllamaLLM } from "../../api/ollama";
-import { VLLMLLM } from "../../api/vllm";
+import { LMDeployLLM } from "../../api/lmdeploy";
 import { LLMRouter } from "../../api/llm-router";
 import { ProviderOptimizer } from "../foundation/adapters/ProviderOptimizer";
 import { PerformanceMonitor, PerformanceInsights } from "./PerformanceMonitor";
@@ -55,7 +55,7 @@ export class MonitoringManager {
 
   constructor(
     ollamaLLM?: OllamaLLM,
-    vllmLLM?: VLLMLLM,
+    lmdeployLLM?: LMDeployLLM,
     router?: LLMRouter,
     optimizer?: ProviderOptimizer,
     config?: Partial<MonitoringConfig>
@@ -79,7 +79,7 @@ export class MonitoringManager {
     this.performanceMonitor = new PerformanceMonitor(router, optimizer);
     this.healthCheckService = new HealthCheckService(
       ollamaLLM, 
-      vllmLLM, 
+      lmdeployLLM, 
       router, 
       this.performanceMonitor
     );
@@ -189,7 +189,7 @@ export class MonitoringManager {
    * Record a performance metric
    */
   recordPerformanceMetric(
-    provider: 'ollama' | 'vllm',
+    provider: 'ollama' | 'lmdeploy',
     operation: string,
     duration: number,
     success: boolean,

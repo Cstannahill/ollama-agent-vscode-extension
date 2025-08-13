@@ -1,6 +1,6 @@
 /**
  * Enhanced Agentic Flow Logger
- * 
+ *
  * Provides detailed logging of the agentic pipeline including:
  * - Agent identification and specialization
  * - Model usage and routing decisions
@@ -36,7 +36,13 @@ export interface AgentLogContext {
 }
 
 export interface ActionLogEntry {
-  actionType: 'thought' | 'tool_call' | 'observation' | 'reasoning' | 'planning' | 'validation';
+  actionType:
+    | "thought"
+    | "tool_call"
+    | "observation"
+    | "reasoning"
+    | "planning"
+    | "validation";
   actionName?: string;
   input?: any;
   output?: any;
@@ -49,7 +55,7 @@ export interface ActionLogEntry {
 
 export interface StageLogEntry {
   stageName: string;
-  stageType: 'pipeline_stage' | 'agent_execution' | 'tool_execution';
+  stageType: "pipeline_stage" | "agent_execution" | "tool_execution";
   startTime: Date;
   endTime?: Date;
   duration?: number;
@@ -92,9 +98,16 @@ class AgenticLogger {
   private currentLogDate: string | null = null;
 
   constructor() {
-    this.outputChannel = vscode.window.createOutputChannel("Ollama Agent - Agentic Flow");
+    this.outputChannel = vscode.window.createOutputChannel(
+      "Ollama Agent - Agentic Flow"
+    );
     this.logDirectory = this.initializeLogDirectory();
     this.updateLogLevel();
+
+    // Log successful initialization
+    this.outputChannel.appendLine(
+      `[AGENTIC_LOGGER] Initialized with log directory: ${this.logDirectory}`
+    );
   }
 
   /**
@@ -104,20 +117,31 @@ class AgenticLogger {
     try {
       // Get the workspace folder or use a default directory
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      const baseDir = workspaceFolder ? workspaceFolder.uri.fsPath : require('os').homedir();
-      const logsDir = path.join(baseDir, '.ollama-agent', 'logs');
-      
+      const baseDir = workspaceFolder
+        ? workspaceFolder.uri.fsPath
+        : require("os").homedir();
+      const logsDir = path.join(
+        baseDir,
+        ".ollama-agent-vscode-extension",
+        "logs"
+      );
+
       // Create the logs directory if it doesn't exist
       if (!fs.existsSync(logsDir)) {
         fs.mkdirSync(logsDir, { recursive: true });
       }
-      
+
       return logsDir;
     } catch (error) {
-      console.error('Failed to initialize log directory:', error);
+      const errorMsg = `Failed to initialize log directory: ${error}`;
+      console.error(errorMsg);
+      // Also log to output channel once it's available
+      if (this.outputChannel) {
+        this.outputChannel.appendLine(`[AGENTIC_LOGGER ERROR] ${errorMsg}`);
+      }
       // Fallback to temp directory
-      const tempDir = require('os').tmpdir();
-      const fallbackDir = path.join(tempDir, 'ollama-agent-logs');
+      const tempDir = require("os").tmpdir();
+      const fallbackDir = path.join(tempDir, "ollama-agent-logs");
       if (!fs.existsSync(fallbackDir)) {
         fs.mkdirSync(fallbackDir, { recursive: true });
       }
@@ -130,14 +154,17 @@ class AgenticLogger {
    */
   private getCurrentLogFile(): string {
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD format
-    
+    const dateStr = now.toISOString().split("T")[0]; // YYYY-MM-DD format
+
     // Check if we need to rotate to a new log file
     if (this.currentLogDate !== dateStr) {
       this.currentLogDate = dateStr;
-      this.currentLogFile = path.join(this.logDirectory, `agentic-flow-${dateStr}.log`);
+      this.currentLogFile = path.join(
+        this.logDirectory,
+        `agentic-flow-${dateStr}.log`
+      );
     }
-    
+
     return this.currentLogFile!;
   }
 
@@ -150,11 +177,53 @@ class AgenticLogger {
       const timestamp = new Date().toISOString();
       const logEntry = `[${timestamp}] ${logMessage}\n`;
       
+      // Ensure log directory exists before writing
+      if (!fs.existsSync(this.logDirectory)) {
+        fs.mkdirSync(this.logDirectory, { recursive: true });
+      }
+      
       // Append to file (create if doesn't exist)
-      fs.appendFileSync(logFile, logEntry, 'utf8');
+      fs.appendFileSync(logFile, logEntry, "utf8");
+      
+      // Verify write was successful by checking file exists
+      if (!fs.existsSync(logFile)) {
+        throw new Error(`Log file was not created: ${logFile}`);
+      }
+      
     } catch (error) {
-      console.error('Failed to write to agentic log file:', error);
-      // Don't throw - we don't want logging to break the application
+      // Enhanced error reporting with more details
+      const errorDetails = {
+        error: error instanceof Error ? error.message : String(error),
+        logDirectory: this.logDirectory,
+        currentLogFile: this.currentLogFile,
+        directoryExists: fs.existsSync(this.logDirectory),
+        canWriteToDirectory: this.canWriteToDirectory()
+      };
+      
+      // Log error to VS Code output channel for visibility
+      this.outputChannel.appendLine(
+        `[AGENTIC_LOGGER ERROR] Failed to write to agentic log file: ${JSON.stringify(errorDetails, null, 2)}`
+      );
+      console.error("Failed to write to agentic log file:", errorDetails);
+      
+      // Also try to log to base logger as fallback
+      if (baseLogger) {
+        baseLogger.error("Agentic logger file write failed:", errorDetails);
+      }
+    }
+  }
+  
+  /**
+   * Check if we can write to the log directory
+   */
+  private canWriteToDirectory(): boolean {
+    try {
+      const testFile = path.join(this.logDirectory, 'test_write.tmp');
+      fs.writeFileSync(testFile, 'test', 'utf8');
+      fs.unlinkSync(testFile);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -166,12 +235,12 @@ class AgenticLogger {
       const files = fs.readdirSync(this.logDirectory);
       const now = Date.now();
       const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-      
+
       for (const file of files) {
-        if (file.startsWith('agentic-flow-') && file.endsWith('.log')) {
+        if (file.startsWith("agentic-flow-") && file.endsWith(".log")) {
           const filePath = path.join(this.logDirectory, file);
           const stats = fs.statSync(filePath);
-          
+
           if (now - stats.mtime.getTime() > thirtyDaysMs) {
             fs.unlinkSync(filePath);
             console.log(`Cleaned up old agentic log file: ${file}`);
@@ -179,7 +248,7 @@ class AgenticLogger {
         }
       }
     } catch (error) {
-      console.error('Failed to cleanup old log files:', error);
+      console.error("Failed to cleanup old log files:", error);
     }
   }
 
@@ -201,7 +270,7 @@ class AgenticLogger {
       default:
         this.logLevel = AgenticLogLevel.INFO;
     }
-    
+
     // Perform cleanup periodically (every time log level is updated)
     // This happens when extension starts or config changes
     this.cleanupOldLogs();
@@ -210,7 +279,11 @@ class AgenticLogger {
   /**
    * Start logging a new pipeline execution
    */
-  public startPipeline(pipelineId: string, query: string, sessionId?: string): void {
+  public startPipeline(
+    pipelineId: string,
+    query: string,
+    sessionId?: string
+  ): void {
     const pipelineEntry: PipelineLogEntry = {
       pipelineId,
       query: query.length > 100 ? `${query.substring(0, 100)}...` : query,
@@ -218,7 +291,7 @@ class AgenticLogger {
       agentFlow: [],
       stagesCompleted: [],
       stagesFailed: [],
-      success: false
+      success: false,
     };
 
     this.activeSessions.set(sessionId || pipelineId, pipelineEntry);
@@ -236,16 +309,17 @@ class AgenticLogger {
    * End pipeline execution
    */
   public endPipeline(
-    pipelineId: string, 
-    success: boolean, 
-    error?: string, 
+    pipelineId: string,
+    success: boolean,
+    error?: string,
     overallConfidence?: number,
     sessionId?: string
   ): void {
     const pipeline = this.activeSessions.get(sessionId || pipelineId);
     if (pipeline) {
       pipeline.endTime = new Date();
-      pipeline.duration = pipeline.endTime.getTime() - pipeline.startTime.getTime();
+      pipeline.duration =
+        pipeline.endTime.getTime() - pipeline.startTime.getTime();
       pipeline.success = success;
       pipeline.error = error;
       pipeline.overallConfidence = overallConfidence;
@@ -253,7 +327,7 @@ class AgenticLogger {
       this.logPipelineEvent(
         success ? AgenticLogLevel.INFO : AgenticLogLevel.ERROR,
         `🏁 PIPELINE_END`,
-        `Pipeline ${pipelineId} ${success ? 'completed' : 'failed'}`,
+        `Pipeline ${pipelineId} ${success ? "completed" : "failed"}`,
         {
           pipelineId,
           duration: pipeline.duration,
@@ -261,7 +335,7 @@ class AgenticLogger {
           stagesFailed: pipeline.stagesFailed.length,
           overallConfidence,
           success,
-          error
+          error,
         }
       );
 
@@ -282,13 +356,14 @@ class AgenticLogger {
     stage?: StageLogEntry,
     sessionId?: string
   ): void {
-    const pipeline = this.currentPipeline || this.activeSessions.get(sessionId || '');
-    
+    const pipeline =
+      this.currentPipeline || this.activeSessions.get(sessionId || "");
+
     const flowEntry: AgentFlowEntry = {
       timestamp: new Date(),
       agent: agentContext,
       action,
-      stage
+      stage,
     };
 
     if (pipeline) {
@@ -297,50 +372,48 @@ class AgenticLogger {
 
     // Format the log message
     const agentInfo = `${agentContext.agentName}(${agentContext.model})`;
-    const stageInfo = stage ? `[${stage.stageName}]` : '';
+    const stageInfo = stage ? `[${stage.stageName}]` : "";
     const actionInfo = action.actionName || action.actionType;
-    
+
     let message = `${agentInfo} ${stageInfo} → ${actionInfo}`;
     if (action.confidence) {
       message += ` (${(action.confidence * 100).toFixed(1)}% confident)`;
     }
 
-    const level = action.success === false ? AgenticLogLevel.ERROR : 
-                 action.actionType === 'thought' ? AgenticLogLevel.DEBUG : 
-                 AgenticLogLevel.INFO;
+    const level =
+      action.success === false
+        ? AgenticLogLevel.ERROR
+        : action.actionType === "thought"
+        ? AgenticLogLevel.DEBUG
+        : AgenticLogLevel.INFO;
 
-    this.logPipelineEvent(
-      level,
-      `🤖 AGENT_ACTION`,
-      message,
-      {
-        agent: agentContext.agentName,
-        model: agentContext.model,
-        provider: agentContext.provider,
-        stage: stage?.stageName,
-        action: actionInfo,
-        duration: action.duration,
-        confidence: action.confidence,
-        success: action.success,
-        input: this.truncateForLog(action.input),
-        output: this.truncateForLog(action.output),
-        error: action.error
-      }
-    );
+    this.logPipelineEvent(level, `🤖 AGENT_ACTION`, message, {
+      agent: agentContext.agentName,
+      model: agentContext.model,
+      provider: agentContext.provider,
+      stage: stage?.stageName,
+      action: actionInfo,
+      duration: action.duration,
+      confidence: action.confidence,
+      success: action.success,
+      input: this.truncateForLog(action.input),
+      output: this.truncateForLog(action.output),
+      error: action.error,
+    });
   }
 
   /**
    * Log stage start
    */
   public logStageStart(
-    stageName: string, 
-    stageType: 'pipeline_stage' | 'agent_execution' | 'tool_execution',
+    stageName: string,
+    stageType: "pipeline_stage" | "agent_execution" | "tool_execution",
     input?: any,
     agentContext?: AgentLogContext,
     sessionId?: string
   ): void {
-    const pipeline = this.currentPipeline || this.activeSessions.get(sessionId || '');
-    
+    // Note: pipeline tracking handled by logPipelineEvent internally
+
     this.logPipelineEvent(
       AgenticLogLevel.INFO,
       `📍 STAGE_START`,
@@ -351,7 +424,7 @@ class AgenticLogger {
         agent: agentContext?.agentName,
         model: agentContext?.model,
         provider: agentContext?.provider,
-        input: this.truncateForLog(input)
+        input: this.truncateForLog(input),
       }
     );
   }
@@ -369,8 +442,9 @@ class AgenticLogger {
     agentContext?: AgentLogContext,
     sessionId?: string
   ): void {
-    const pipeline = this.currentPipeline || this.activeSessions.get(sessionId || '');
-    
+    const pipeline =
+      this.currentPipeline || this.activeSessions.get(sessionId || "");
+
     if (pipeline) {
       if (success) {
         pipeline.stagesCompleted.push(stageName);
@@ -379,8 +453,10 @@ class AgenticLogger {
       }
     }
 
-    const statusIcon = success ? '✅' : '❌';
-    let message = `${statusIcon} ${stageName} ${success ? 'completed' : 'failed'}`;
+    const statusIcon = success ? "✅" : "❌";
+    let message = `${statusIcon} ${stageName} ${
+      success ? "completed" : "failed"
+    }`;
     if (duration) {
       message += ` (${duration}ms)`;
     }
@@ -401,7 +477,7 @@ class AgenticLogger {
         model: agentContext?.model,
         provider: agentContext?.provider,
         output: this.truncateForLog(output),
-        error
+        error,
       }
     );
   }
@@ -418,9 +494,10 @@ class AgenticLogger {
     confidence?: number,
     metrics?: Record<string, any>
   ): void {
-    const routingInfo = originalProvider !== selectedProvider 
-      ? `${originalProvider} → ${selectedProvider}` 
-      : selectedProvider;
+    const routingInfo =
+      originalProvider !== selectedProvider
+        ? `${originalProvider} → ${selectedProvider}`
+        : selectedProvider;
 
     this.logPipelineEvent(
       AgenticLogLevel.INFO,
@@ -433,7 +510,7 @@ class AgenticLogger {
         model,
         reason,
         confidence,
-        metrics
+        metrics,
       }
     );
   }
@@ -459,7 +536,7 @@ class AgenticLogger {
       {
         provider,
         model,
-        ...metrics
+        ...metrics,
       }
     );
   }
@@ -476,7 +553,7 @@ class AgenticLogger {
     success?: boolean,
     error?: string
   ): void {
-    const statusIcon = success ? '🔧' : '⚠️';
+    const statusIcon = success ? "🔧" : "⚠️";
     let message = `${statusIcon} ${agent.agentName} executed ${toolName}`;
     if (duration) {
       message += ` (${duration}ms)`;
@@ -494,7 +571,7 @@ class AgenticLogger {
         success,
         input: this.truncateForLog(input),
         output: this.truncateForLog(output),
-        error
+        error,
       }
     );
   }
@@ -504,7 +581,11 @@ class AgenticLogger {
    */
   public logReasoning(
     agent: AgentLogContext,
-    reasoningType: 'chain_of_thought' | 'task_planning' | 'critique' | 'validation',
+    reasoningType:
+      | "chain_of_thought"
+      | "task_planning"
+      | "critique"
+      | "validation",
     steps: string[],
     confidence?: number,
     duration?: number
@@ -520,7 +601,7 @@ class AgenticLogger {
         steps: steps.slice(0, 3), // Limit to first 3 steps for brevity
         totalSteps: steps.length,
         confidence,
-        duration
+        duration,
       }
     );
   }
@@ -529,7 +610,8 @@ class AgenticLogger {
    * Get pipeline statistics
    */
   public getPipelineStatistics(sessionId?: string): any {
-    const pipelineEntry = this.currentPipeline || this.activeSessions.get(sessionId || '');
+    const pipelineEntry =
+      this.currentPipeline || this.activeSessions.get(sessionId || "");
     if (!pipelineEntry) {
       return null;
     }
@@ -544,13 +626,16 @@ class AgenticLogger {
       agentUsage.set(agentKey, (agentUsage.get(agentKey) || 0) + 1);
 
       // Track model usage
-      const modelKey = flow.agent.provider ? 
-        `${flow.agent.model}@${flow.agent.provider}` : 
-        flow.agent.model;
+      const modelKey = flow.agent.provider
+        ? `${flow.agent.model}@${flow.agent.provider}`
+        : flow.agent.model;
       modelUsage.set(modelKey, (modelUsage.get(modelKey) || 0) + 1);
 
       // Track action types
-      actionTypes.set(flow.action.actionType, (actionTypes.get(flow.action.actionType) || 0) + 1);
+      actionTypes.set(
+        flow.action.actionType,
+        (actionTypes.get(flow.action.actionType) || 0) + 1
+      );
     }
 
     return {
@@ -563,7 +648,7 @@ class AgenticLogger {
       modelUsage: Object.fromEntries(modelUsage),
       actionTypes: Object.fromEntries(actionTypes),
       overallConfidence: pipelineEntry.overallConfidence,
-      success: pipelineEntry.success
+      success: pipelineEntry.success,
     };
   }
 
@@ -585,19 +670,19 @@ class AgenticLogger {
 
     // Color coding by event type
     let coloredEventType = eventType;
-    if (eventType.includes('PIPELINE_START')) {
+    if (eventType.includes("PIPELINE_START")) {
       coloredEventType = chalk.green.bold(eventType);
-    } else if (eventType.includes('PIPELINE_END')) {
+    } else if (eventType.includes("PIPELINE_END")) {
       coloredEventType = chalk.blue.bold(eventType);
-    } else if (eventType.includes('AGENT_ACTION')) {
+    } else if (eventType.includes("AGENT_ACTION")) {
       coloredEventType = chalk.cyan(eventType);
-    } else if (eventType.includes('STAGE_')) {
+    } else if (eventType.includes("STAGE_")) {
       coloredEventType = chalk.yellow(eventType);
-    } else if (eventType.includes('MODEL_ROUTING')) {
+    } else if (eventType.includes("MODEL_ROUTING")) {
       coloredEventType = chalk.magenta(eventType);
-    } else if (eventType.includes('TOOL_EXECUTION')) {
+    } else if (eventType.includes("TOOL_EXECUTION")) {
       coloredEventType = chalk.white(eventType);
-    } else if (eventType.includes('REASONING')) {
+    } else if (eventType.includes("REASONING")) {
       coloredEventType = chalk.gray(eventType);
     }
 
@@ -623,7 +708,11 @@ class AgenticLogger {
     // Log to agentic channel
     let outputMessage: string;
     if (data && Object.keys(data).length > 0) {
-      outputMessage = `${formattedMessage}\n  └─ ${JSON.stringify(data, null, 2)}`;
+      outputMessage = `${formattedMessage}\n  └─ ${JSON.stringify(
+        data,
+        null,
+        2
+      )}`;
       this.outputChannel.appendLine(`${formattedMessage}`);
       this.outputChannel.appendLine(`  └─ ${JSON.stringify(data, null, 2)}`);
     } else {
@@ -643,11 +732,11 @@ class AgenticLogger {
    */
   private truncateForLog(obj: any, maxLength: number = 200): any {
     if (obj === null || obj === undefined) return obj;
-    
-    const str = typeof obj === 'string' ? obj : JSON.stringify(obj);
+
+    const str = typeof obj === "string" ? obj : JSON.stringify(obj);
     if (str.length <= maxLength) return obj;
-    
-    return str.substring(0, maxLength) + '...';
+
+    return str.substring(0, maxLength) + "...";
   }
 
   /**
@@ -669,7 +758,9 @@ class AgenticLogger {
    * Export current session data
    */
   public exportSessionData(sessionId?: string): PipelineLogEntry | null {
-    return this.currentPipeline || this.activeSessions.get(sessionId || '') || null;
+    return (
+      this.currentPipeline || this.activeSessions.get(sessionId || "") || null
+    );
   }
 
   /**
@@ -683,7 +774,7 @@ class AgenticLogger {
     return {
       logDirectory: this.logDirectory,
       currentLogFile: this.currentLogFile,
-      currentLogDate: this.currentLogDate
+      currentLogDate: this.currentLogDate,
     };
   }
 
@@ -694,11 +785,13 @@ class AgenticLogger {
     try {
       const files = fs.readdirSync(this.logDirectory);
       return files
-        .filter(file => file.startsWith('agentic-flow-') && file.endsWith('.log'))
+        .filter(
+          (file) => file.startsWith("agentic-flow-") && file.endsWith(".log")
+        )
         .sort()
         .reverse(); // Most recent first
     } catch (error) {
-      console.error('Failed to read log directory:', error);
+      console.error("Failed to read log directory:", error);
       return [];
     }
   }
@@ -710,7 +803,7 @@ class AgenticLogger {
     try {
       const filePath = path.join(this.logDirectory, filename);
       if (fs.existsSync(filePath)) {
-        return fs.readFileSync(filePath, 'utf8');
+        return fs.readFileSync(filePath, "utf8");
       }
       return null;
     } catch (error) {
@@ -732,32 +825,111 @@ class AgenticLogger {
 export const agenticLogger = new AgenticLogger();
 
 // Helper functions for common logging patterns
-export const logPipelineStart = (pipelineId: string, query: string, sessionId?: string) => 
-  agenticLogger.startPipeline(pipelineId, query, sessionId);
+export const logPipelineStart = (
+  pipelineId: string,
+  query: string,
+  sessionId?: string
+) => agenticLogger.startPipeline(pipelineId, query, sessionId);
 
-export const logPipelineEnd = (pipelineId: string, success: boolean, error?: string, confidence?: number, sessionId?: string) => 
+export const logPipelineEnd = (
+  pipelineId: string,
+  success: boolean,
+  error?: string,
+  confidence?: number,
+  sessionId?: string
+) =>
   agenticLogger.endPipeline(pipelineId, success, error, confidence, sessionId);
 
-export const logAgentAction = (agent: AgentLogContext, action: ActionLogEntry, stage?: StageLogEntry, sessionId?: string) => 
-  agenticLogger.logAgentAction(agent, action, stage, sessionId);
+export const logAgentAction = (
+  agent: AgentLogContext,
+  action: ActionLogEntry,
+  stage?: StageLogEntry,
+  sessionId?: string
+) => agenticLogger.logAgentAction(agent, action, stage, sessionId);
 
-export const logStageStart = (stageName: string, stageType: 'pipeline_stage' | 'agent_execution' | 'tool_execution', input?: any, agent?: AgentLogContext, sessionId?: string) => 
-  agenticLogger.logStageStart(stageName, stageType, input, agent, sessionId);
+export const logStageStart = (
+  stageName: string,
+  stageType: "pipeline_stage" | "agent_execution" | "tool_execution",
+  input?: any,
+  agent?: AgentLogContext,
+  sessionId?: string
+) => agenticLogger.logStageStart(stageName, stageType, input, agent, sessionId);
 
-export const logStageEnd = (stageName: string, success: boolean, duration?: number, confidence?: number, output?: any, error?: string, agent?: AgentLogContext, sessionId?: string) => 
-  agenticLogger.logStageEnd(stageName, success, duration, confidence, output, error, agent, sessionId);
+export const logStageEnd = (
+  stageName: string,
+  success: boolean,
+  duration?: number,
+  confidence?: number,
+  output?: any,
+  error?: string,
+  agent?: AgentLogContext,
+  sessionId?: string
+) =>
+  agenticLogger.logStageEnd(
+    stageName,
+    success,
+    duration,
+    confidence,
+    output,
+    error,
+    agent,
+    sessionId
+  );
 
-export const logModelRouting = (stage: string, originalProvider: string, selectedProvider: string, model: string, reason: string, confidence?: number, metrics?: Record<string, any>) => 
-  agenticLogger.logModelRouting(stage, originalProvider, selectedProvider, model, reason, confidence, metrics);
+export const logModelRouting = (
+  stage: string,
+  originalProvider: string,
+  selectedProvider: string,
+  model: string,
+  reason: string,
+  confidence?: number,
+  metrics?: Record<string, any>
+) =>
+  agenticLogger.logModelRouting(
+    stage,
+    originalProvider,
+    selectedProvider,
+    model,
+    reason,
+    confidence,
+    metrics
+  );
 
-export const logToolExecution = (toolName: string, agent: AgentLogContext, input: any, output?: any, duration?: number, success?: boolean, error?: string) => 
-  agenticLogger.logToolExecution(toolName, agent, input, output, duration, success, error);
+export const logToolExecution = (
+  toolName: string,
+  agent: AgentLogContext,
+  input: any,
+  output?: any,
+  duration?: number,
+  success?: boolean,
+  error?: string
+) =>
+  agenticLogger.logToolExecution(
+    toolName,
+    agent,
+    input,
+    output,
+    duration,
+    success,
+    error
+  );
 
-export const logReasoning = (agent: AgentLogContext, reasoningType: 'chain_of_thought' | 'task_planning' | 'critique' | 'validation', steps: string[], confidence?: number, duration?: number) => 
+export const logReasoning = (
+  agent: AgentLogContext,
+  reasoningType:
+    | "chain_of_thought"
+    | "task_planning"
+    | "critique"
+    | "validation",
+  steps: string[],
+  confidence?: number,
+  duration?: number
+) =>
   agenticLogger.logReasoning(agent, reasoningType, steps, confidence, duration);
 
 // Helper functions for log management
 export const getLogInfo = () => agenticLogger.getLogInfo();
 export const getLogFiles = () => agenticLogger.getLogFiles();
-export const readLogFile = (filename: string) => agenticLogger.readLogFile(filename);
+export const readLogFile = (filename: string) =>
+  agenticLogger.readLogFile(filename);
 export const showAgenticLogs = () => agenticLogger.show();

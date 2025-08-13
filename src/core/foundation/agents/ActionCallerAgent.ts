@@ -8,6 +8,7 @@
 import { logger } from "../../../utils/logger";
 import { OllamaLLM } from "../../../api/ollama";
 import { ContextManager } from "../../ContextManager";
+import { ToolManager } from "../../ToolManager";
 import { VectorDatabase } from "../../../documentation/VectorDatabase";
 import { robustJSON } from "../../../utils/RobustJSONParser";
 import {
@@ -26,6 +27,7 @@ export class ActionCallerAgent implements IActionCallerAgent {
   private llm: OllamaLLM;
   private contextManager?: ContextManager;
   private vectorDB?: VectorDatabase;
+  private toolManager?: ToolManager;
   private initialized = false;
   private config: FoundationAgentConfig;
 
@@ -34,6 +36,7 @@ export class ActionCallerAgent implements IActionCallerAgent {
     model: string,
     contextManager?: ContextManager,
     vectorDB?: VectorDatabase,
+    toolManager?: ToolManager,
     config?: Partial<FoundationAgentConfig>
   ) {
     this.config = {
@@ -46,6 +49,7 @@ export class ActionCallerAgent implements IActionCallerAgent {
 
     this.contextManager = contextManager;
     this.vectorDB = vectorDB;
+    this.toolManager = toolManager;
 
     this.llm = new OllamaLLM({
       baseUrl: ollamaUrl,
@@ -131,6 +135,36 @@ export class ActionCallerAgent implements IActionCallerAgent {
           alternatives: []
         }
       };
+    }
+  }
+
+  /**
+   * Get available tools description for prompts
+   */
+  private getAvailableToolsDescription(): string {
+    if (!this.toolManager) {
+      return "- Tools unavailable (ToolManager not provided)";
+    }
+
+    try {
+      const tools = this.toolManager.getAllTools();
+      let description = tools.map(tool => 
+        `- ${tool.name}: ${tool.description}`
+      ).join('\n');
+      
+      // Add key parameter examples for common tools
+      description += `
+
+**Common Tool Parameter Examples:**
+- file_write: {"filePath": "path/to/file.py", "content": "file content here"}
+- file_read: {"filePath": "path/to/file.py"}
+- shell_exec: {"command": "npm install", "workingDirectory": "."}
+- git_status: {"showUntrackedFiles": true}`;
+
+      return description;
+    } catch (error) {
+      logger.warn("[ACTION_CALLER_AGENT] Failed to get tool descriptions:", error);
+      return "- Tool information unavailable";
     }
   }
 
@@ -235,13 +269,14 @@ ${contextInfo}
 3. **Parameter Generation**: Create proper parameters for the function call
 4. **Reasoning**: Explain why this action call achieves the task step
 
-**Available Tool Categories:**
-- file_operations: file_read, file_write, file_search, directory_list
-- git_operations: git_status, git_commit, git_branch, git_push
-- shell_commands: shell_execute, command_run
-- code_analysis: lint_check, type_check, test_run
-- search_operations: content_search, pattern_match
-- documentation: doc_generate, doc_update
+**Available Tools:**
+${this.getAvailableToolsDescription()}
+
+**IMPORTANT: Tool Selection Rules**
+- You MUST only select tools from the available tools list above
+- Do NOT invent or hallucinate tool names
+- If unsure, use 'manual_execution' as fallback
+- Verify the tool name exists in the available tools list
 
 **Respond in JSON format:**
 {
@@ -309,10 +344,30 @@ ${contextInfo}
     if (parseResult.success) {
       const data = parseResult.data;
       
+      let toolId = data.toolId || this.inferToolFromAction(originalPlan.action);
+      
+      // Validate that the selected tool actually exists
+      const availableTools = this.getAvailableToolNames();
+      if (!availableTools.includes(toolId)) {
+        logger.warn(`[ACTION_CALLER_AGENT] Invalid tool selected: ${toolId}, falling back to inference`);
+        toolId = this.inferToolFromAction(originalPlan.action);
+        
+        // Double-check the inferred tool
+        if (!availableTools.includes(toolId)) {
+          logger.warn(`[ACTION_CALLER_AGENT] Inferred tool also invalid: ${toolId}, using manual_execution`);
+          toolId = 'manual_execution';
+        }
+      }
+      
+      const parameters = data.parameters || originalPlan.parameters || {};
+      
+      // Enhance parameters with context if missing key fields
+      const enhancedParameters = this.enhanceParameters(toolId, parameters, originalPlan);
+      
       return {
-        toolId: data.toolId || this.inferToolFromAction(originalPlan.action),
+        toolId: toolId,
         functionName: data.functionName || originalPlan.action || "execute",
-        parameters: data.parameters || originalPlan.parameters || {},
+        parameters: enhancedParameters,
         metadata: {
           reasoning: data.metadata?.reasoning || "Generated from task step",
           confidence: Math.max(0, Math.min(1, parseFloat(data.metadata?.confidence) || 0.7)),
@@ -358,28 +413,578 @@ ${contextInfo}
   }
 
   /**
-   * Infer tool from action name
+   * Infer tool from action name using available tools
    */
   private inferToolFromAction(action: string): string {
-    const actionMap: { [key: string]: string } = {
-      'read': 'file_read',
-      'write': 'file_write',
-      'search': 'content_search',
-      'execute': 'shell_execute',
-      'git': 'git_status',
-      'test': 'test_run',
-      'lint': 'lint_check',
-      'compile': 'shell_execute',
-      'build': 'shell_execute'
+    // First, get actual available tools from ToolManager
+    const availableTools = this.getAvailableToolNames();
+    
+    const actionLower = action.toLowerCase();
+    
+    // Direct matches with available tools
+    for (const toolName of availableTools) {
+      if (actionLower.includes(toolName.toLowerCase().replace('_', ' ')) || 
+          actionLower.includes(toolName.toLowerCase())) {
+        return toolName;
+      }
+    }
+    
+    // Common action patterns mapped to likely tool names
+    const actionMap: { [key: string]: string[] } = {
+      'read': ['file_read', 'read_file', 'file_reader', 'text_reader'],
+      'write': ['file_write', 'write_file', 'file_writer', 'text_writer'],
+      'create': ['file_write', 'write_file', 'create_file', 'file_creator'],
+      'directory': ['create_directory', 'mkdir', 'directory_create'],
+      'search': ['content_search', 'file_search', 'search_content', 'grep'],
+      'execute': ['shell_execute', 'command_execute', 'run_command', 'exec'],
+      'git': ['git_status', 'git_command', 'version_control'],
+      'test': ['test_run', 'run_tests', 'test_execute'],
+      'lint': ['lint_check', 'code_lint', 'style_check'],
+      'compile': ['shell_execute', 'compile_code', 'build_project'],
+      'build': ['shell_execute', 'build_project', 'compile_code']
     };
 
-    for (const [keyword, tool] of Object.entries(actionMap)) {
-      if (action.toLowerCase().includes(keyword)) {
-        return tool;
+    // Find matching tools from available tools
+    for (const [keyword, possibleTools] of Object.entries(actionMap)) {
+      if (actionLower.includes(keyword)) {
+        for (const toolName of possibleTools) {
+          if (availableTools.includes(toolName)) {
+            return toolName;
+          }
+        }
       }
+    }
+    
+    // Fallback: try to find any reasonable match
+    if (actionLower.includes('file') && availableTools.some(t => t.includes('file'))) {
+      return availableTools.find(t => t.includes('file')) || 'manual_execution';
+    }
+    
+    if (actionLower.includes('shell') && availableTools.some(t => t.includes('shell'))) {
+      return availableTools.find(t => t.includes('shell')) || 'manual_execution';
     }
 
     return 'manual_execution';
+  }
+
+  /**
+   * Get available tool names from ToolManager
+   */
+  private getAvailableToolNames(): string[] {
+    if (!this.toolManager) {
+      return [];
+    }
+    
+    try {
+      return this.toolManager.getAllTools().map(tool => tool.name);
+    } catch (error) {
+      logger.debug("[ACTION_CALLER_AGENT] Could not get tool names:", error);
+      return [];
+    }
+  }
+
+  /**
+   * Enhance parameters with context-aware fixes for missing/undefined values
+   */
+  private enhanceParameters(toolId: string, parameters: any, originalPlan: TaskStep): any {
+    const enhanced = { ...parameters };
+    
+    try {
+      // Get tool schema information if available
+      const toolSchema = this.getToolSchema(toolId);
+      
+      switch (toolId) {
+        case 'file_write':
+        case 'write_file':
+          // Ensure filePath is provided for file_write operations
+          if (!enhanced.filePath || enhanced.filePath === 'undefined') {
+            enhanced.filePath = this.inferFilePathFromTask(originalPlan);
+          }
+          // Ensure content is provided
+          if (!enhanced.content && !enhanced.code) {
+            enhanced.content = this.inferContentFromTask(originalPlan);
+          }
+          // Ensure directory creation if path includes directories
+          if (enhanced.filePath && enhanced.filePath.includes('/')) {
+            enhanced.createDirectories = true;
+          }
+          break;
+          
+        case 'file_read':
+          if (!enhanced.filePath || enhanced.filePath === 'undefined') {
+            enhanced.filePath = this.inferFilePathFromTask(originalPlan);
+          }
+          break;
+          
+        case 'shell_exec':
+        case 'shell_execute':
+          if (!enhanced.command) {
+            enhanced.command = originalPlan.action || originalPlan.description;
+          }
+          if (!enhanced.workingDirectory) {
+            enhanced.workingDirectory = '.';
+          }
+          break;
+          
+        case 'git_status':
+        case 'git_commit':
+          if (enhanced.showUntrackedFiles === undefined) {
+            enhanced.showUntrackedFiles = true;
+          }
+          break;
+          
+        default:
+          // Generic parameter enhancement
+          this.enhanceGenericParameters(enhanced, originalPlan, toolSchema);
+          break;
+      }
+      
+      logger.debug(`[ACTION_CALLER_AGENT] Enhanced parameters for ${toolId}:`, enhanced);
+      return enhanced;
+      
+    } catch (error) {
+      logger.warn(`[ACTION_CALLER_AGENT] Parameter enhancement failed for ${toolId}:`, error);
+      return parameters; // Return original if enhancement fails
+    }
+  }
+
+  /**
+   * Infer file path from task description and context
+   */
+  private inferFilePathFromTask(task: TaskStep): string {
+    const desc = task.description.toLowerCase();
+    
+    // First, look for complete path structures (directory + file)
+    const pathMatches = task.description.match(/(?:at|in|to)\s+([\w\-_/.]+)\/([a-zA-Z0-9_\-]+\.[a-zA-Z]+)/i);
+    if (pathMatches && pathMatches[1] && pathMatches[2]) {
+      return `${pathMatches[1]}/${pathMatches[2]}`;
+    }
+    
+    // Look for explicit directory + file mentions
+    const dirFileMatches = task.description.match(/([\w\-_/]+(?:\/[\w\-_]+)*)\s+(?:called|named)\s+([a-zA-Z0-9_\-]+)\s*,?\s*(?:create|file)?\s*([a-zA-Z0-9_\-]+\.[a-zA-Z]+)/i);
+    if (dirFileMatches && dirFileMatches[1] && dirFileMatches[3]) {
+      const dir = dirFileMatches[1];
+      const filename = dirFileMatches[3];
+      return `${dir}/${dirFileMatches[2] || 'folder'}/${filename}`;
+    }
+    
+    // Look for directory creation followed by file creation pattern
+    const combinedMatches = task.description.match(/directory\s+(?:at\s+)?([\w\-_/]+)\s+called\s+([\w\-_]+).*?file\s+([\w\-_.]+)/i);
+    if (combinedMatches && combinedMatches[1] && combinedMatches[2] && combinedMatches[3]) {
+      return `${combinedMatches[1]}/${combinedMatches[2]}/${combinedMatches[3]}`;
+    }
+    
+    // Look for explicit file mentions
+    const fileMatches = task.description.match(/(?:file|path|create|write)\s+([^\s]+\.(py|js|ts|tsx|json|md|txt|html|css|java|cpp|c|go|rs|rb))/i);
+    if (fileMatches && fileMatches[1]) {
+      return fileMatches[1];
+    }
+    
+    // Look for filename patterns
+    const filenameMatches = task.description.match(/([a-zA-Z0-9_\-]+\.(py|js|ts|tsx|json|md|txt|html|css|java|cpp|c|go|rs|rb))/i);
+    if (filenameMatches && filenameMatches[0]) {
+      return filenameMatches[0];
+    }
+    
+    // Infer from task type and context
+    if (desc.includes('main.py') || desc.includes('python')) {
+      return 'main.py';
+    }
+    if (desc.includes('index.js') || desc.includes('javascript')) {
+      return 'index.js';
+    }
+    if (desc.includes('readme') || desc.includes('documentation')) {
+      return 'README.md';
+    }
+    if (desc.includes('config') || desc.includes('configuration')) {
+      return 'config.json';
+    }
+    
+    // Default based on task action
+    if (task.action?.includes('python') || desc.includes('python')) {
+      return 'main.py';
+    }
+    if (task.action?.includes('javascript') || desc.includes('javascript')) {
+      return 'index.js';
+    }
+    
+    // Fallback to generic filename
+    return 'output.txt';
+  }
+
+  /**
+   * Infer content from task description
+   */
+  private inferContentFromTask(task: TaskStep): string {
+    const desc = task.description.toLowerCase();
+    
+    // Look for quoted content first
+    const quotedMatch = task.description.match(/"([^"]+)"/);
+    if (quotedMatch && quotedMatch[1]) {
+      return quotedMatch[1];
+    }
+    
+    const singleQuotedMatch = task.description.match(/'([^']+)'/);
+    if (singleQuotedMatch && singleQuotedMatch[1]) {
+      return singleQuotedMatch[1];
+    }
+    
+    // Check for specific page types and frameworks
+    if (desc.includes('registration') && desc.includes('page')) {
+      if (desc.includes('tailwind') || desc.includes('styled')) {
+        return this.generateRegistrationPageContent(task.description);
+      }
+    }
+    
+    if (desc.includes('login') && desc.includes('page')) {
+      if (desc.includes('tailwind')) {
+        return this.generateLoginPageContent();
+      }
+    }
+    
+    // Look for React/Next.js component patterns
+    if (desc.includes('page.tsx') || (desc.includes('react') && desc.includes('component'))) {
+      return this.generateReactPageContent(task.description);
+    }
+    
+    // Look for code-like content
+    if (desc.includes('function')) {
+      const functionMatch = task.description.match(/function\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+      const funcName = functionMatch ? functionMatch[1] : 'myFunction';
+      
+      if (desc.includes('python')) {
+        return `def ${funcName}():\n    # TODO: Implement function\n    pass\n`;
+      } else if (desc.includes('javascript') || desc.includes('typescript')) {
+        return `function ${funcName}() {\n    // TODO: Implement function\n}\n`;
+      }
+    }
+    
+    // Look for specific patterns like "logs Hello"
+    const logMatch = task.description.match(/logs?\s+"([^"]+)"/i);
+    if (logMatch && logMatch[1]) {
+      if (desc.includes('python')) {
+        return `print("${logMatch[1]}")`;
+      } else if (desc.includes('javascript') || desc.includes('typescript')) {
+        return `console.log("${logMatch[1]}");`;
+      }
+    }
+    
+    // Generic content generation
+    if (desc.includes('hello') || desc.includes('Hello')) {
+      if (desc.includes('python')) {
+        return 'print("Hello, World!")';
+      } else if (desc.includes('javascript') || desc.includes('typescript')) {
+        return 'console.log("Hello, World!");';
+      } else {
+        return 'Hello, World!';
+      }
+    }
+    
+    // Fallback content
+    return `# Content generated for: ${task.description}\n# TODO: Replace with actual implementation`;
+  }
+
+  /**
+   * Generate registration page content with Tailwind styling
+   */
+  private generateRegistrationPageContent(description: string): string {
+    return `'use client';
+
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+
+export default function RegisterPage() {
+  const [formData, setFormData] = useState({
+    email: '',
+    password: '',
+    confirmPassword: '',
+    name: ''
+  });
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (formData.password !== formData.confirmPassword) {
+      alert('Passwords do not match');
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      // TODO: Implement registration logic
+      console.log('Registration data:', formData);
+      // router.push('/dashboard');
+    } catch (error) {
+      console.error('Registration failed:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData(prev => ({
+      ...prev,
+      [e.target.name]: e.target.value
+    }));
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md w-full space-y-8">
+        <div>
+          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+            Create your account
+          </h2>
+          <p className="mt-2 text-center text-sm text-gray-600">
+            Or{' '}
+            <a href="/login" className="font-medium text-indigo-600 hover:text-indigo-500">
+              sign in to your existing account
+            </a>
+          </p>
+        </div>
+        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+          <div className="rounded-md shadow-sm -space-y-px">
+            <div>
+              <label htmlFor="name" className="sr-only">
+                Full name
+              </label>
+              <input
+                id="name"
+                name="name"
+                type="text"
+                required
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="Full name"
+                value={formData.name}
+                onChange={handleChange}
+              />
+            </div>
+            <div>
+              <label htmlFor="email" className="sr-only">
+                Email address
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                autoComplete="email"
+                required
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="Email address"
+                value={formData.email}
+                onChange={handleChange}
+              />
+            </div>
+            <div>
+              <label htmlFor="password" className="sr-only">
+                Password
+              </label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                required
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="Password"
+                value={formData.password}
+                onChange={handleChange}
+              />
+            </div>
+            <div>
+              <label htmlFor="confirmPassword" className="sr-only">
+                Confirm Password
+              </label>
+              <input
+                id="confirmPassword"
+                name="confirmPassword"
+                type="password"
+                autoComplete="new-password"
+                required
+                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+                placeholder="Confirm password"
+                value={formData.confirmPassword}
+                onChange={handleChange}
+              />
+            </div>
+          </div>
+
+          <div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? 'Creating account...' : 'Create account'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}`;
+  }
+
+  /**
+   * Generate login page content with Tailwind styling
+   */
+  private generateLoginPageContent(): string {
+    return `'use client';
+
+import { useState } from 'react';
+
+export default function LoginPage() {
+  const [formData, setFormData] = useState({
+    email: '',
+    password: ''
+  });
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      // TODO: Implement login logic
+      console.log('Login data:', formData);
+    } catch (error) {
+      console.error('Login failed:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="max-w-md w-full space-y-8">
+        <h2 className="text-3xl font-extrabold text-center">Sign In</h2>
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <input
+            type="email"
+            placeholder="Email"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            value={formData.email}
+            onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            value={formData.password}
+            onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
+            required
+          />
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+          >
+            {loading ? 'Signing in...' : 'Sign In'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}`;
+  }
+
+  /**
+   * Generate React page content
+   */
+  private generateReactPageContent(description: string): string {
+    const componentName = description.match(/(\w+)\.tsx/)?.[1] || 'Page';
+    
+    return `export default function ${componentName}() {
+  return (
+    <div className="container mx-auto px-4 py-8">
+      <h1 className="text-3xl font-bold mb-6">${componentName}</h1>
+      <p className="text-gray-600">
+        This is the ${componentName.toLowerCase()} component.
+      </p>
+    </div>
+  );
+}`;
+  }
+
+  /**
+   * Get tool schema information from ToolManager
+   */
+  private getToolSchema(toolId: string): any {
+    if (!this.toolManager) {
+      return null;
+    }
+    
+    try {
+      const tool = this.toolManager.getTool(toolId);
+      return tool?.schema || null;
+    } catch (error) {
+      logger.debug(`[ACTION_CALLER_AGENT] Could not get schema for ${toolId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Enhance generic parameters using tool schema
+   */
+  private enhanceGenericParameters(parameters: any, task: TaskStep, schema: any): void {
+    if (!schema || !schema.properties) {
+      return;
+    }
+    
+    // Fill in missing required parameters with sensible defaults
+    for (const [paramName, paramDef] of Object.entries(schema.properties)) {
+      const def = paramDef as any;
+      
+      if (!parameters[paramName] || parameters[paramName] === 'undefined') {
+        // Try to infer from task description
+        const inferred = this.inferParameterFromDescription(paramName, task.description, def);
+        if (inferred !== null) {
+          parameters[paramName] = inferred;
+        }
+      }
+    }
+  }
+
+  /**
+   * Infer parameter value from task description
+   */
+  private inferParameterFromDescription(paramName: string, description: string, paramDef: any): any {
+    const desc = description.toLowerCase();
+    const name = paramName.toLowerCase();
+    
+    // Common parameter patterns
+    if (name.includes('path') || name.includes('file')) {
+      return this.inferFilePathFromTask({ description, action: '', parameters: {}, dependencies: [], estimatedTime: 1, priority: 'medium', id: 'temp' });
+    }
+    
+    if (name.includes('content') || name.includes('text') || name.includes('code')) {
+      return this.inferContentFromTask({ description, action: '', parameters: {}, dependencies: [], estimatedTime: 1, priority: 'medium', id: 'temp' });
+    }
+    
+    if (name.includes('command')) {
+      const cmdMatch = description.match(/(?:run|execute|command)\s+([^\s]+)/i);
+      return cmdMatch ? cmdMatch[1] : description;
+    }
+    
+    if (name.includes('directory') || name.includes('dir')) {
+      return '.';
+    }
+    
+    // Type-based defaults
+    if (paramDef.type === 'boolean') {
+      return true;
+    }
+    
+    if (paramDef.type === 'number') {
+      return 0;
+    }
+    
+    if (paramDef.type === 'array') {
+      return [];
+    }
+    
+    return null;
   }
 
   /**

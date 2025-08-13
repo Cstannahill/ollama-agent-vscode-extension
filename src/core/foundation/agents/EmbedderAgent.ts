@@ -1,6 +1,6 @@
 /**
  * Embedder Agent - Vector operations and similarity calculations
- * 
+ *
  * Implements text embedding generation and vector similarity operations
  * for semantic search and content matching.
  */
@@ -10,29 +10,55 @@ import { OllamaLLM } from "../../../api/ollama";
 import {
   IEmbedderAgent,
   SimilarityResult,
-  FoundationAgentConfig
+  FoundationAgentConfig,
 } from "../IFoundationAgent";
+import { CacheManager, SmartCache } from "../../cache/CacheManager";
 
 export class EmbedderAgent implements IEmbedderAgent {
+  /**
+   * Set initialized state (for cache restoration)
+   */
+  setInitialized(state: boolean): void {
+    this.initialized = state;
+  }
   public readonly name = "EmbedderAgent";
   public readonly modelSize = "0.1-1B";
+  
+  // Emergency circuit breaker for infinite initialization loops
+  private static initializationCount = 0;
+  private static readonly MAX_INITIALIZATION_ATTEMPTS = 10; // Reduced from 50
+  
+  /**
+   * Reset initialization counter (for testing/cleanup)
+   */
+  public static resetInitializationCount(): void {
+    EmbedderAgent.initializationCount = 0;
+  }
 
   private llm: OllamaLLM;
   private initialized = false;
   private config: FoundationAgentConfig;
-  private embeddingCache: Map<string, number[]> = new Map();
+  private embeddingCache: SmartCache<number[]>;
+  private cacheManager: CacheManager;
+  private readonly maxCacheSize: number;
 
   constructor(
     ollamaUrl: string,
     model: string,
     config?: Partial<FoundationAgentConfig>
   ) {
+    // Log constructor calls to track instance creation
+    const stack = new Error().stack;
+    const callerInfo = stack?.split('\n')[2]?.trim() || 'unknown caller';
+    logger.info(`[EMBEDDER_AGENT] NEW INSTANCE created for model: ${model} (${ollamaUrl})`);
+    logger.debug(`[EMBEDDER_AGENT] Constructor called from: ${callerInfo}`);
+    
     this.config = {
-      modelSize: '0.1-1B',
+      modelSize: "0.1-1B",
       temperature: 0.0, // No randomness for embeddings
       maxTokens: 1, // Embeddings don't need text generation
-      timeout: 10000,
-      ...config
+      timeout: config?.timeout ?? 10000,
+      ...config,
     };
 
     this.llm = new OllamaLLM({
@@ -40,40 +66,85 @@ export class EmbedderAgent implements IEmbedderAgent {
       model: model,
       temperature: this.config.temperature,
     });
+    this.maxCacheSize = config?.maxCacheSize ?? 5000;
+    
+    // Initialize smart caching system
+    this.cacheManager = CacheManager.getInstance();
+    this.embeddingCache = this.cacheManager.getCache(`embeddings_${model}`, {
+      maxSize: this.maxCacheSize,
+      maxMemoryMB: 100, // 100MB for embeddings
+      defaultTTLMs: 3600000, // 1 hour TTL for embeddings
+      enableLRU: true,
+      enableStats: true,
+      cleanupIntervalMs: 300000 // 5 minutes cleanup
+    });
   }
 
   async initialize(): Promise<void> {
-    if (this.initialized) return;
-
+    if (this.initialized) {
+      // Idempotent: skip all logging and logic if already initialized
+      return;
+    }
+    
+    // Emergency circuit breaker: prevent infinite initialization loops
+    if (EmbedderAgent.initializationCount > EmbedderAgent.MAX_INITIALIZATION_ATTEMPTS) {
+      const stack = new Error().stack;
+      logger.error(`[EMBEDDER_AGENT] EMERGENCY: Infinite initialization loop detected! Attempt #${EmbedderAgent.initializationCount}`);
+      logger.error(`[EMBEDDER_AGENT] Stack trace: ${stack}`);
+      logger.error("[EMBEDDER_AGENT] Stopping initialization to prevent system hang.");
+      this.initialized = true; // Force initialized to break the loop
+      return;
+    }
+    
+    EmbedderAgent.initializationCount++;
+    
+    // Detailed logging to track initialization calls
+    const stack = new Error().stack;
+    const callerInfo = stack?.split('\n')[3]?.trim() || 'unknown caller';
+    logger.info(`[EMBEDDER_AGENT] Initializing embedder agent... (attempt #${EmbedderAgent.initializationCount})`);
+    logger.debug(`[EMBEDDER_AGENT] Called from: ${callerInfo}`);
+    
     try {
-      logger.info("[EMBEDDER_AGENT] Initializing embedder agent...");
-      
-      // Test embedding generation with timeout protection
+      // Test deterministic embedding generation (no API calls)
       try {
-        const testEmbedding = await Promise.race([
-          this.generateSimulatedEmbedding("test initialization text"),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Embedding test timeout")), 5000)
-          )
-        ]);
-        
+        const testEmbedding = this.generateDeterministicEmbedding("test initialization text");
         if (testEmbedding && Array.isArray(testEmbedding) && testEmbedding.length > 0) {
-          logger.debug(`[EMBEDDER_AGENT] Embedding test successful (${testEmbedding.length} dimensions)`);
+          logger.debug(
+            `[EMBEDDER_AGENT] Deterministic embedding test successful (${testEmbedding.length} dimensions)`
+          );
         }
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 
-          (typeof error === 'object' && error !== null) ? JSON.stringify(error) : String(error);
-        logger.warn(`[EMBEDDER_AGENT] Embedding test failed, continuing with fallback functionality: ${errorMessage}`);
-        // Don't throw here - allow the agent to initialize with fallback embedding
+        logger.warn(
+          `[EMBEDDER_AGENT] Deterministic embedding test failed: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
-      
+      // Pre-warm cache with common texts
+      const commonTexts = [
+        "project",
+        "agent",
+        "context",
+        "test",
+        "initialize",
+        "embedding",
+        "cache",
+        "memory",
+        "performance",
+        "optimization",
+      ];
+      for (const text of commonTexts) {
+        try {
+          // Call generateEmbedding directly to avoid infinite loop
+          await this.generateEmbedding(text);
+        } catch {}
+      }
       this.initialized = true;
-      logger.info("[EMBEDDER_AGENT] Embedder agent initialized successfully");
+      logger.info(`[EMBEDDER_AGENT] Embedder agent initialized successfully (attempt #${EmbedderAgent.initializationCount})`);
     } catch (error) {
       logger.error("[EMBEDDER_AGENT] Failed to initialize:", error);
-      // Still mark as initialized to prevent blocking the pipeline
       this.initialized = true;
-      logger.warn("[EMBEDDER_AGENT] Marked as initialized with degraded functionality");
+      logger.warn(
+        "[EMBEDDER_AGENT] Marked as initialized with degraded functionality"
+      );
     }
   }
 
@@ -88,45 +159,44 @@ export class EmbedderAgent implements IEmbedderAgent {
       "Batch embedding processing",
       "Vector space operations",
       "Similarity threshold filtering",
-      "Efficient caching and retrieval"
+      "Efficient caching and retrieval",
     ];
   }
 
   /**
-   * Generate embedding for a single text
+   * Generate embedding for a single text (smart cached)
    */
   async embed(text: string): Promise<number[]> {
     if (!this.initialized) {
       await this.initialize();
     }
 
-    // Check cache first
     const cacheKey = this.getCacheKey(text);
-    if (this.embeddingCache.has(cacheKey)) {
-      return this.embeddingCache.get(cacheKey)!;
-    }
+    
+    // Use smart cache with automatic LRU and TTL management
+    return await this.embeddingCache.getOrCompute(cacheKey, async () => {
+      return await this.generateEmbedding(text);
+    });
+  }
 
+  /**
+   * Generate embedding without caching (internal method)
+   */
+  private async generateEmbedding(text: string): Promise<number[]> {
     try {
-      logger.debug(`[EMBEDDER_AGENT] Generating embedding for text: ${text.substring(0, 50)}...`);
-
-      // Note: Ollama doesn't have native embedding endpoints in the current API
-      // This is a simulation using text similarity. In production, you would:
-      // 1. Use a dedicated embedding model via Ollama embeddings API when available
-      // 2. Use an external embedding service (OpenAI, Cohere, etc.)
-      // 3. Use a local embedding model (sentence-transformers, etc.)
-      
+      logger.debug(
+        `[EMBEDDER_AGENT] Generating embedding for text: ${text.substring(
+          0,
+          50
+        )}...`
+      );
       const embedding = await this.generateSimulatedEmbedding(text);
-      
-      // Cache the result
-      this.embeddingCache.set(cacheKey, embedding);
-      
-      logger.debug(`[EMBEDDER_AGENT] Generated ${embedding.length}-dimensional embedding`);
+      logger.debug(
+        `[EMBEDDER_AGENT] Generated ${embedding.length}-dimensional embedding`
+      );
       return embedding;
-
     } catch (error) {
       logger.error("[EMBEDDER_AGENT] Embedding generation failed:", error);
-      
-      // Fallback: generate a simple hash-based pseudo-embedding
       return this.generateFallbackEmbedding(text);
     }
   }
@@ -140,27 +210,39 @@ export class EmbedderAgent implements IEmbedderAgent {
     }
 
     try {
-      logger.debug(`[EMBEDDER_AGENT] Generating batch embeddings for ${texts.length} texts`);
+      logger.debug(
+        `[EMBEDDER_AGENT] Generating batch embeddings for ${texts.length} texts`
+      );
 
       const embeddings = await Promise.all(
         texts.map(async (text) => {
           try {
             return await this.embed(text);
           } catch (error) {
-            logger.warn(`[EMBEDDER_AGENT] Failed to embed text: ${text.substring(0, 30)}...`, error);
+            logger.warn(
+              `[EMBEDDER_AGENT] Failed to embed text: ${text.substring(
+                0,
+                30
+              )}...`,
+              error
+            );
             return this.generateFallbackEmbedding(text);
           }
         })
       );
 
-      logger.debug(`[EMBEDDER_AGENT] Generated ${embeddings.length} batch embeddings`);
+      logger.debug(
+        `[EMBEDDER_AGENT] Generated ${embeddings.length} batch embeddings`
+      );
       return embeddings;
-
     } catch (error) {
-      logger.error("[EMBEDDER_AGENT] Batch embedding generation failed:", error);
-      
+      logger.error(
+        "[EMBEDDER_AGENT] Batch embedding generation failed:",
+        error
+      );
+
       // Fallback: generate simple embeddings for all texts
-      return texts.map(text => this.generateFallbackEmbedding(text));
+      return texts.map((text) => this.generateFallbackEmbedding(text));
     }
   }
 
@@ -191,7 +273,6 @@ export class EmbedderAgent implements IEmbedderAgent {
 
       const similarity = dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
       return Math.max(-1, Math.min(1, similarity)); // Clamp to [-1, 1]
-
     } catch (error) {
       logger.error("[EMBEDDER_AGENT] Similarity calculation failed:", error);
       return 0;
@@ -202,8 +283,8 @@ export class EmbedderAgent implements IEmbedderAgent {
    * Find similar embeddings above threshold
    */
   findSimilar(
-    query: number[], 
-    embeddings: number[][], 
+    query: number[],
+    embeddings: number[][],
     threshold: number = 0.5
   ): SimilarityResult[] {
     try {
@@ -211,15 +292,15 @@ export class EmbedderAgent implements IEmbedderAgent {
 
       embeddings.forEach((embedding, index) => {
         const similarityScore = this.similarity(query, embedding);
-        
+
         if (similarityScore >= threshold) {
           results.push({
             index,
             similarity: similarityScore,
             metadata: {
               threshold,
-              embeddingDimension: embedding.length
-            }
+              embeddingDimension: embedding.length,
+            },
           });
         }
       });
@@ -227,9 +308,10 @@ export class EmbedderAgent implements IEmbedderAgent {
       // Sort by similarity (descending)
       results.sort((a, b) => b.similarity - a.similarity);
 
-      logger.debug(`[EMBEDDER_AGENT] Found ${results.length} similar embeddings above threshold ${threshold}`);
+      logger.debug(
+        `[EMBEDDER_AGENT] Found ${results.length} similar embeddings above threshold ${threshold}`
+      );
       return results;
-
     } catch (error) {
       logger.error("[EMBEDDER_AGENT] Similar embedding search failed:", error);
       return [];
@@ -237,8 +319,8 @@ export class EmbedderAgent implements IEmbedderAgent {
   }
 
   /**
-   * Generate embedding using Ollama's embedding API
-   * Falls back to simulated embedding if the model doesn't support embeddings
+   * Generate embedding using proper embedding methods
+   * No text generation fallbacks - embeddings only!
    */
   private async generateSimulatedEmbedding(text: string): Promise<number[]> {
     try {
@@ -247,44 +329,68 @@ export class EmbedderAgent implements IEmbedderAgent {
         try {
           return await this.llm.generateEmbedding(text);
         } catch (error) {
-          logger.debug("[EMBEDDER_AGENT] Embedding API failed, falling back to simulation:", error);
+          logger.debug(
+            "[EMBEDDER_AGENT] Embedding API failed, using deterministic fallback:",
+            error
+          );
         }
       }
 
-      // Fallback: Use LLM to analyze text characteristics and generate a pseudo-embedding
-      const analysisPrompt = `Analyze this text and provide numeric scores (0.0-1.0) for these dimensions:
-1. Technical content level
-2. Positive sentiment
-3. Complexity level  
-4. Specificity level
-5. Action orientation
-6. Question/query nature
-7. Code-related content
-8. Problem-solving focus
-
-Text: "${text.substring(0, 200)}..."
-
-Respond with 8 numbers between 0.0 and 1.0, separated by commas:`;
-
-      const response = await this.llm.generateText(analysisPrompt);
-
-      // Extract numbers from response
-      const numbers = response.match(/(\d+\.?\d*)/g);
-      if (numbers && numbers.length >= 8) {
-        const embedding = numbers.slice(0, 8).map(n => parseFloat(n));
-        
-        // Extend to higher dimensions with derived features
-        const extendedEmbedding = this.extendEmbedding(embedding, text);
-        return this.normalizeEmbedding(extendedEmbedding);
-      }
-
-      // Fallback if parsing fails
-      return this.generateFallbackEmbedding(text);
-
+      // IMPORTANT: No text generation here! Generate embedding deterministically
+      logger.debug("[EMBEDDER_AGENT] Using deterministic embedding generation for:", text.substring(0, 50));
+      return this.generateDeterministicEmbedding(text);
+      
     } catch (error) {
-      logger.warn("[EMBEDDER_AGENT] Simulated embedding generation failed:", error);
+      logger.warn(
+        "[EMBEDDER_AGENT] Embedding generation failed:",
+        error
+      );
       return this.generateFallbackEmbedding(text);
     }
+  }
+
+  /**
+   * Generate deterministic embedding based on text features
+   * This replaces the incorrect text generation approach
+   */
+  private generateDeterministicEmbedding(text: string): number[] {
+    const features = this.extractTextFeatures(text);
+    const embedding = this.extendEmbedding(features, text);
+    return this.normalizeEmbedding(embedding);
+  }
+
+  /**
+   * Extract numerical features from text without using LLM text generation
+   */
+  private extractTextFeatures(text: string): number[] {
+    const lowerText = text.toLowerCase();
+    const chars = text.length;
+    
+    return [
+      // Technical content indicators (0-1 scale)
+      Math.min(1, (lowerText.match(/\b(function|class|method|api|code|programming|software|development|algorithm|database|server|client|http|json|xml|javascript|python|typescript|java|react|node|git|sql|html|css)\b/g)?.length || 0) / 10),
+      
+      // Sentiment approximation (0-1 scale, 0.5 = neutral)
+      0.5 + Math.max(-0.5, Math.min(0.5, ((lowerText.match(/\b(good|great|excellent|awesome|love|like|perfect|amazing|fantastic|wonderful|help|solve|fix|improve|better|success|work|easy|simple)\b/g)?.length || 0) - (lowerText.match(/\b(bad|terrible|awful|hate|broken|fail|error|problem|issue|bug|difficult|hard|impossible|wrong|slow)\b/g)?.length || 0)) / 20)),
+      
+      // Complexity level (0-1 scale)
+      Math.min(1, chars / 1000), // Length-based complexity
+      
+      // Specificity level (0-1 scale)
+      Math.min(1, (text.match(/\b[A-Z][a-z]+\b/g)?.length || 0) / 20), // Proper nouns
+      
+      // Action orientation (0-1 scale)
+      Math.min(1, (lowerText.match(/\b(create|build|implement|develop|generate|make|write|add|update|delete|remove|fix|solve|execute|run|start|stop|install|configure|setup|deploy|test|debug)\b/g)?.length || 0) / 10),
+      
+      // Question nature (0-1 scale)
+      (text.includes('?') ? 0.8 : 0) + Math.min(0.2, (lowerText.match(/\b(what|how|why|when|where|which|who|can|could|should|would|is|are|do|does|will)\b/g)?.length || 0) / 20),
+      
+      // Code-related content (0-1 scale)
+      Math.min(1, ((text.match(/[{}();]/g)?.length || 0) + (text.match(/\b(const|let|var|function|class|import|export|return|if|else|for|while|switch|case|try|catch)\b/g)?.length || 0)) / 30),
+      
+      // Problem-solving focus (0-1 scale)
+      Math.min(1, (lowerText.match(/\b(solve|fix|debug|troubleshoot|resolve|analyze|investigate|diagnose|repair|correct|address|handle)\b/g)?.length || 0) / 10)
+    ];
   }
 
   /**
@@ -292,38 +398,74 @@ Respond with 8 numbers between 0.0 and 1.0, separated by commas:`;
    */
   private generateFallbackEmbedding(text: string): number[] {
     const embedding: number[] = [];
-    
+
     // Text length feature
     embedding.push(Math.min(1.0, text.length / 1000));
-    
+
     // Word count feature
     const words = text.split(/\s+/).length;
     embedding.push(Math.min(1.0, words / 100));
-    
+
     // Character diversity
     const uniqueChars = new Set(text.toLowerCase()).size;
     embedding.push(Math.min(1.0, uniqueChars / 50));
-    
+
     // Code-like content
-    const codeIndicators = ['{', '}', '(', ')', ';', '=', 'function', 'class', 'import'];
-    const codeScore = codeIndicators.filter(indicator => text.includes(indicator)).length / codeIndicators.length;
+    const codeIndicators = [
+      "{",
+      "}",
+      "(",
+      ")",
+      ";",
+      "=",
+      "function",
+      "class",
+      "import",
+    ];
+    const codeScore =
+      codeIndicators.filter((indicator) => text.includes(indicator)).length /
+      codeIndicators.length;
     embedding.push(codeScore);
-    
+
     // Question indicators
-    const questionWords = ['what', 'how', 'why', 'when', 'where', 'which', '?'];
-    const questionScore = questionWords.filter(word => text.toLowerCase().includes(word)).length / questionWords.length;
+    const questionWords = ["what", "how", "why", "when", "where", "which", "?"];
+    const questionScore =
+      questionWords.filter((word) => text.toLowerCase().includes(word)).length /
+      questionWords.length;
     embedding.push(questionScore);
-    
+
     // Technical content
-    const techWords = ['api', 'function', 'method', 'class', 'variable', 'error', 'debug', 'test'];
-    const techScore = techWords.filter(word => text.toLowerCase().includes(word)).length / techWords.length;
+    const techWords = [
+      "api",
+      "function",
+      "method",
+      "class",
+      "variable",
+      "error",
+      "debug",
+      "test",
+    ];
+    const techScore =
+      techWords.filter((word) => text.toLowerCase().includes(word)).length /
+      techWords.length;
     embedding.push(techScore);
-    
+
     // Action words
-    const actionWords = ['create', 'build', 'make', 'implement', 'fix', 'solve', 'add', 'update'];
-    const actionScore = actionWords.filter(word => text.toLowerCase().includes(word)).length / actionWords.length;
+    const actionWords = [
+      "create",
+      "build",
+      "make",
+      "implement",
+      "fix",
+      "solve",
+      "add",
+      "update",
+    ];
+    const actionScore =
+      actionWords.filter((word) => text.toLowerCase().includes(word)).length /
+      actionWords.length;
     embedding.push(actionScore);
-    
+
     // Extend to higher dimensions with hash-based features
     return this.extendEmbedding(embedding, text);
   }
@@ -333,17 +475,17 @@ Respond with 8 numbers between 0.0 and 1.0, separated by commas:`;
    */
   private extendEmbedding(baseEmbedding: number[], text: string): number[] {
     const extended = [...baseEmbedding];
-    
+
     // Add hash-based features for higher dimensionality
     const textHash = this.simpleHash(text);
     const dimensions = 64; // Target dimension count
-    
+
     while (extended.length < dimensions) {
       const index = extended.length;
       const hashFeature = ((textHash * (index + 1)) % 1000) / 1000;
       extended.push(hashFeature);
     }
-    
+
     return extended.slice(0, dimensions);
   }
 
@@ -352,12 +494,12 @@ Respond with 8 numbers between 0.0 and 1.0, separated by commas:`;
    */
   private normalizeEmbedding(embedding: number[]): number[] {
     const norm = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-    
+
     if (norm === 0) {
       return embedding.map(() => 0);
     }
-    
-    return embedding.map(val => val / norm);
+
+    return embedding.map((val) => val / norm);
   }
 
   /**
@@ -367,7 +509,7 @@ Respond with 8 numbers between 0.0 and 1.0, separated by commas:`;
     let hash = 0;
     for (let i = 0; i < text.length; i++) {
       const char = text.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
+      hash = (hash << 5) - hash + char;
       hash = hash & hash; // Convert to 32-bit integer
     }
     return Math.abs(hash);
@@ -391,9 +533,26 @@ Respond with 8 numbers between 0.0 and 1.0, separated by commas:`;
   /**
    * Get cache statistics
    */
-  getCacheStats(): { size: number; hitRate?: number } {
+  getCacheStats() {
+    const stats = this.embeddingCache.getStats();
     return {
-      size: this.embeddingCache.size
+      size: stats.size,
+      maxCacheSize: this.maxCacheSize,
+      evictions: stats.evictions,
+      hitRate: stats.hitRate,
+      memoryUsageMB: stats.memoryUsageMB,
+      hits: stats.hits,
+      misses: stats.misses
     };
+  }
+
+  /**
+   * Unload agent and free memory
+   */
+  unload(): void {
+    this.embeddingCache.destroy();
+    this.llm = null as any;
+    this.initialized = false;
+    logger.info("[EMBEDDER_AGENT] Unloaded and memory released");
   }
 }

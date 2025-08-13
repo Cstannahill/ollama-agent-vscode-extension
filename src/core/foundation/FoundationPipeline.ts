@@ -41,6 +41,7 @@ import {
   EvaluationResult,
   ExpandedQuery,
 } from "./IFoundationAgent";
+import { FoundationAgents } from "./FoundationAgentFactory";
 import { ProviderOptimizer } from "./adapters/ProviderOptimizer";
 import { LLMRouter, LLMProvider } from "../../api/llm-router";
 import chalk from "chalk";
@@ -111,6 +112,7 @@ export class FoundationPipeline {
   private config: FoundationPipelineConfig;
   private stages: Map<string, PipelineStage> = new Map();
   private initialized = false;
+  private agents: FoundationAgents;
   
   // Provider optimization integration
   private providerOptimizer?: ProviderOptimizer;
@@ -133,6 +135,8 @@ export class FoundationPipeline {
     config: FoundationPipelineConfig,
     llmRouter?: LLMRouter
   ) {
+    // Store full agents object for model access
+    this.agents = agents as FoundationAgents;
     this.retriever = agents.retriever;
     this.reranker = agents.reranker;
     this.toolSelector = agents.toolSelector;
@@ -160,26 +164,41 @@ export class FoundationPipeline {
    * Initialize the pipeline stages with their dependencies and execution logic
    */
   private initializePipelineStages(): void {
-    // Stage 1: Query Rewriting (expand and optimize the user query)
-    this.stages.set('query_rewriting', {
-      name: 'Query Rewriting',
-      agent: this.queryRewriter,
+    // Stage 1: Query Processing (original input)
+    this.stages.set('query', {
+      name: 'Query Processing', 
+      agent: this.queryRewriter, // Use query rewriter as proxy for query processing
       dependencies: [],
       parallel: false,
-      critical: false,
+      critical: true,
       execute: async (input: string, context: PipelineContext) => {
-        context.progressCallback?.onThought?.("🔄 Expanding and optimizing query...");
-        const expandedQuery = await this.queryRewriter.expandQuery(input, JSON.stringify(context.workspaceContext));
+        context.progressCallback?.onThought?.("📝 Processing original query...");
+        // Store original query and prepare for expansion
+        context.originalQuery = input;
+        return { original: input, processed: input };
+      }
+    });
+
+    // Stage 2: Expand (enhance and optimize the user query) 
+    this.stages.set('expand', {
+      name: 'Query Expansion',
+      agent: this.queryRewriter,
+      dependencies: ['query'],
+      parallel: false,
+      critical: false,
+      execute: async (input: any, context: PipelineContext) => {
+        context.progressCallback?.onThought?.("🔄 Expanding and enhancing query...");
+        const expandedQuery = await this.queryRewriter.expandQuery(context.originalQuery, JSON.stringify(context.workspaceContext));
         context.expandedQuery = expandedQuery;
         return expandedQuery;
       }
     });
 
-    // Stage 2: Retrieval (fetch relevant context using expanded query)
-    this.stages.set('retrieval', {
+    // Stage 3: Retrieve (fetch relevant context using expanded query)
+    this.stages.set('retrieve', {
       name: 'Context Retrieval',
       agent: this.retriever,
-      dependencies: ['query_rewriting'],
+      dependencies: ['expand'],
       parallel: false,
       critical: true,
       execute: async (expandedQuery: ExpandedQuery, context: PipelineContext) => {
@@ -193,11 +212,11 @@ export class FoundationPipeline {
       }
     });
 
-    // Stage 3: Reranking (score and reorder retrieved content)
-    this.stages.set('reranking', {
-      name: 'Content Reranking',
+    // Stage 4: Rerank (score and reorder retrieved content)
+    this.stages.set('rerank', {
+      name: 'Content Reranking', 
       agent: this.reranker,
-      dependencies: ['retrieval'],
+      dependencies: ['retrieve'],
       parallel: false,
       critical: false,
       execute: async (retrievalResults: RetrievalResult[], context: PipelineContext) => {
@@ -210,11 +229,11 @@ export class FoundationPipeline {
       }
     });
 
-    // Stage 4: Chunk Scoring (extract most relevant portions)
-    this.stages.set('chunk_scoring', {
-      name: 'Chunk Scoring',
+    // Stage 5: Score (extract most relevant portions)
+    this.stages.set('score', {
+      name: 'Relevance Scoring',
       agent: this.chunkScorer,
-      dependencies: ['reranking'],
+      dependencies: ['rerank'],
       parallel: true,
       critical: false,
       execute: async (rerankedResults: RerankResult[], context: PipelineContext) => {
@@ -237,7 +256,7 @@ export class FoundationPipeline {
     this.stages.set('tool_selection', {
       name: 'Tool Selection',
       agent: this.toolSelector,
-      dependencies: ['query_rewriting'],
+      dependencies: ['expand'],
       parallel: true,
       critical: true,
       execute: async (expandedQuery: ExpandedQuery, context: PipelineContext) => {
@@ -254,7 +273,7 @@ export class FoundationPipeline {
     this.stages.set('task_planning', {
       name: 'Task Planning',
       agent: this.taskPlanner,
-      dependencies: ['tool_selection', 'chunk_scoring'],
+      dependencies: ['tool_selection', 'score'],
       parallel: false,
       critical: true,
       execute: async (input: any, context: PipelineContext) => {
@@ -1119,18 +1138,109 @@ export class FoundationPipeline {
    * Get model for a specific stage
    */
   private getStageModel(stageName: string): string {
-    const stageProvider = this.stageProviders.get(stageName);
-    if (stageProvider) {
-      return stageProvider.provider;
-    }
-
-    // Try to get from stage agent
+    // Try to get from stage agent's LLM instance
     const stage = this.stages.get(stageName);
-    if (stage?.agent && 'model' in stage.agent) {
-      return (stage.agent as any).model || 'unknown';
+    if (stage?.agent) {
+      // Try to access the LLM's model property
+      const agent = stage.agent as any;
+      
+      // OllamaLLM stores model in config.model, not model directly
+      if (agent.llm && agent.llm.config && agent.llm.config.model) {
+        return agent.llm.config.model;
+      }
+      
+      // Fallback: try direct model property
+      if (agent.llm && agent.llm.model) {
+        return agent.llm.model;
+      }
+      
+      // Try alternative agent model property patterns
+      if (agent.model) {
+        return agent.model;
+      }
+      
+      // Try to get from agent config
+      if (agent.config && agent.config.model) {
+        return agent.config.model;
+      }
     }
 
-    // Fallback to default model (this would normally come from config)
+    // Check stage providers for model info (but extract model name, not provider)
+    const stageProvider = this.stageProviders.get(stageName);
+    if (stageProvider && stageProvider.decision && stageProvider.decision.model) {
+      return stageProvider.decision.model;
+    }
+
+    // Map stage names to agent types for model lookup
+    const stageToAgentMap: Record<string, keyof FoundationAgents> = {
+      'expand': 'queryRewriter',
+      'retrieve': 'retriever', 
+      'rerank': 'reranker',
+      'score': 'chunkScorer',
+      'tool_selection': 'toolSelector',
+      'plan': 'taskPlanner',
+      'reason': 'cotGenerator',
+      'generate_actions': 'actionCaller',
+      'validate': 'critic',
+      'evaluate': 'embedder'
+    };
+    
+    const agentType = stageToAgentMap[stageName];
+    if (agentType && this.agents) {
+      const agent = this.agents[agentType] as any;
+      // Check the correct location for OllamaLLM model property
+      if (agent && agent.llm && agent.llm.config && agent.llm.config.model) {
+        return agent.llm.config.model;
+      }
+      // Fallback
+      if (agent && agent.llm && agent.llm.model) {
+        return agent.llm.model;
+      }
+    }
+
+    // Log warning about missing model info
+    logger.warn(`[FOUNDATION_PIPELINE] Could not determine model for stage: ${stageName}, using fallback`);
+    
+    // Smart fallback: get model from any available agent instead of hardcoded default
+    const fallbackModel = this.getSmartFallbackModel();
+    logger.debug(`[FOUNDATION_PIPELINE] Using smart fallback model: ${fallbackModel}`);
+    return fallbackModel;
+  }
+
+  /**
+   * Get a smart fallback model from available agents instead of hardcoded default
+   */
+  private getSmartFallbackModel(): string {
+    // Try to get model from any available agent in priority order
+    const agentPriority: Array<keyof FoundationAgents> = [
+      'queryRewriter',  // Start with most commonly configured
+      'retriever',
+      'taskPlanner',
+      'cotGenerator',
+      'toolSelector',
+      'reranker',
+      'critic',
+      'chunkScorer',
+      'actionCaller',
+      'embedder'
+    ];
+    
+    for (const agentType of agentPriority) {
+      const agent = this.agents?.[agentType] as any;
+      // Check the correct location for OllamaLLM model property
+      if (agent && agent.llm && agent.llm.config && agent.llm.config.model) {
+        logger.debug(`[FOUNDATION_PIPELINE] Smart fallback using model from ${agentType}: ${agent.llm.config.model}`);
+        return agent.llm.config.model;
+      }
+      // Fallback
+      if (agent && agent.llm && agent.llm.model) {
+        logger.debug(`[FOUNDATION_PIPELINE] Smart fallback using model from ${agentType}: ${agent.llm.model}`);
+        return agent.llm.model;
+      }
+    }
+    
+    // Final fallback if no agents have models (should be very rare)
+    logger.warn(`[FOUNDATION_PIPELINE] No agent models available, using system fallback`);
     return 'llama3.2:3b';
   }
 

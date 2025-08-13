@@ -17,6 +17,7 @@ import { ProjectContextPanel } from "../views/ProjectContextPanel";
 import { ProjectContextManager } from "../context/ProjectContextManager";
 import { FoundationModelsPanel } from "../views/FoundationModelsPanel";
 import { FoundationModelsSidebarProvider } from "../views/FoundationModelsSidebarProvider";
+import { LMDeployServerManager } from "../services/LMDeployServerManager";
 
 let globalAgent: BasicAgent | null = null;
 let globalAgentFactory: AgentFactory | null = null;
@@ -83,7 +84,69 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(CONSTANTS.COMMANDS.OPEN_FOUNDATION_MODELS, () =>
       openFoundationModels(context)
     ),
-    vscode.commands.registerCommand("ollamaAgent.analyzeWorkspace", analyzeWorkspace)
+    vscode.commands.registerCommand("ollamaAgent.analyzeWorkspace", analyzeWorkspace),
+    // Debug commands for foundation models
+    vscode.commands.registerCommand("ollamaAgent.debugFoundationModels", async () => {
+      try {
+        const config = getConfig();
+        const foundationModels = config.foundation?.models || {};
+        
+        const message = `Foundation Models Configuration:
+${JSON.stringify(foundationModels, null, 2)}
+
+Cache Status:
+- Factory initialized: ${globalAgentFactory ? 'Yes' : 'No'}
+
+To clear caches and force reinitialization, run the "Clear Foundation Caches" command.`;
+        
+        vscode.window.showInformationMessage("Foundation Models Debug", { modal: true, detail: message });
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to debug foundation models: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }),
+    vscode.commands.registerCommand("ollamaAgent.clearFoundationCaches", async () => {
+      try {
+        // Import FoundationBasicAgent here to avoid circular dependencies
+        const { FoundationBasicAgent } = await import('../agents/FoundationBasicAgent');
+        FoundationBasicAgent.clearFoundationCaches();
+        vscode.window.showInformationMessage("Foundation system caches cleared. Next agent execution will use updated models.");
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to clear caches: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }),
+    // LMDeploy server management commands
+    vscode.commands.registerCommand("ollamaAgent.lmdeployStatus", () => {
+      try {
+        const lmdeployManager = LMDeployServerManager.getInstance(context.extensionPath);
+        lmdeployManager.showServerStatus();
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to access LMDeploy server: ${error}`);
+      }
+    }),
+    vscode.commands.registerCommand("ollamaAgent.lmdeployStart", async () => {
+      try {
+        const lmdeployManager = LMDeployServerManager.getInstance(context.extensionPath);
+        await lmdeployManager.startServer();
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to start LMDeploy server: ${error}`);
+      }
+    }),
+    vscode.commands.registerCommand("ollamaAgent.lmdeployStop", async () => {
+      try {
+        const lmdeployManager = LMDeployServerManager.getInstance(context.extensionPath);
+        await lmdeployManager.stopServer();
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to stop LMDeploy server: ${error}`);
+      }
+    }),
+    vscode.commands.registerCommand("ollamaAgent.lmdeployRestart", async () => {
+      try {
+        const lmdeployManager = LMDeployServerManager.getInstance(context.extensionPath);
+        await lmdeployManager.restartServer();
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to restart LMDeploy server: ${error}`);
+      }
+    })
   );
 
   logger.info("Extension commands registered successfully");
@@ -798,14 +861,70 @@ async function openProjectContext(context: vscode.ExtensionContext): Promise<voi
         workspacePath,
         maxFileSize: 1024 * 1024, // 1MB
         excludePatterns: [
+          // Version control
+          '**/.git/**',
+          '**/.svn/**',
+          '**/.hg/**',
+          
+          // Node.js
           '**/node_modules/**',
-          '**/.*',
-          '**/*.git/**',
-          '**/dist/**',
+          
+          // Python virtual environments
+          '**/venv/**',
+          '**/env/**',
+          '**/.venv/**',
+          '**/__pycache__/**',
+          '**/site-packages/**',
+          
+          // Build outputs
           '**/build/**',
+          '**/dist/**',
           '**/out/**',
+          '**/target/**',
+          
+          // Rust specific
+          '**/target/**',
+          '**/Cargo.lock',
+          '**/*.pdb',
+          '**/*.exe',
+          '**/*.dll',
+          
+          // Framework specific
+          '**/.next/**',
+          '.next/**',
+          '**/.nuxt/**',
+          
+          // Package managers
+          '**/vendor/**',
+          '**/Pods/**',
+          
+          // Caches
+          '**/.cache/**',
+          '**/coverage/**',
+          '**/logs/**',
+          '**/.tmp/**',
+          '**/temp/**',
+          
+          // IDE and system files  
+          '**/.gradle/**',
+          '**/gradle/**',
+          '**/cmake-build-*/**',
+          '**/DerivedData/**',
+          '**/.dart_tool/**',
+          '**/packages/**',
+          '**/.pub-cache/**',
+          '**/bin/**',
+          '**/obj/**',
+          
+          // Log files
           '**/*.log',
-          '**/coverage/**'
+          
+          // Hidden files (but allow important config files)
+          '**/.*',
+          '!**/.env.example',
+          '!**/.gitignore',
+          '!**/.eslintrc*',
+          '!**/.prettierrc*'
         ],
         includePatterns: ['**/*.ts', '**/*.js', '**/*.json', '**/*.md', '**/*.css', '**/*.html'],
         maxConcurrency: 3,

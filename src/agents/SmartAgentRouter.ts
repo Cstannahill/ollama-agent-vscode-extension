@@ -177,7 +177,7 @@ export class SmartAgentRouter {
     const decision = await this.routeTask(task, context, progressCallback);
 
     // Get the selected agent
-    const agent = this.agentFactory.getAgent(decision.selectedAgent);
+    const agent = this.agentFactory.getAgentSync(decision.selectedAgent);
     if (!agent) {
       throw new Error(`Agent ${decision.selectedAgent} not available`);
     }

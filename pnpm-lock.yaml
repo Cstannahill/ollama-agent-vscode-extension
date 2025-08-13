@@ -13,7 +13,7 @@ importers:
         version: 0.1.8
       '@langchain/community':
         specifier: ^0.3.49
-        version: 0.3.49(@browserbasehq/sdk@2.6.0(encoding@0.1.13))(@browserbasehq/stagehand@1.14.0(@playwright/test@1.54.2)(deepmerge@4.3.1)(dotenv@16.6.1)(encoding@0.1.13)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(zod@4.0.14))(@huggingface/transformers@3.7.1)(@ibm-cloud/watsonx-ai@1.6.10)(@langchain/core@0.3.66(openai@5.11.0(ws@8.18.3)(zod@4.0.14)))(axios@1.11.0)(cheerio@1.1.2)(chromadb@3.0.10)(encoding@0.1.13)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@25.0.1)(jsonwebtoken@9.0.2)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(playwright@1.54.2)(weaviate-client@3.8.0(encoding@0.1.13))(ws@8.18.3)
+        version: 0.3.49(@browserbasehq/sdk@2.6.0(encoding@0.1.13))(@browserbasehq/stagehand@1.14.0(@playwright/test@1.54.2)(deepmerge@4.3.1)(dotenv@17.2.1)(encoding@0.1.13)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(zod@4.0.14))(@huggingface/transformers@3.7.1)(@ibm-cloud/watsonx-ai@1.6.10)(@langchain/core@0.3.66(openai@5.11.0(ws@8.18.3)(zod@4.0.14)))(axios@1.11.0)(cheerio@1.1.2)(chromadb@3.0.10)(encoding@0.1.13)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@25.0.1)(jsonwebtoken@9.0.2)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(playwright@1.54.2)(weaviate-client@3.8.0(encoding@0.1.13))(ws@8.18.3)
       '@langchain/core':
         specifier: ^0.3.66
         version: 0.3.66(openai@5.11.0(ws@8.18.3)(zod@4.0.14))
@@ -29,6 +29,9 @@ importers:
       chromadb:
         specifier: ^3.0.10
         version: 3.0.10
+      dotenv:
+        specifier: ^17.2.1
+        version: 17.2.1
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -1254,6 +1257,10 @@ packages:
 
   dotenv@16.6.1:
     resolution: {integrity: sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==}
+    engines: {node: '>=12'}
+
+  dotenv@17.2.1:
+    resolution: {integrity: sha512-kQhDYKZecqnM0fCnzI5eIv5L4cAe/iRI+HqMbO/hbRdTAeXDG+M9FjipUxNfbARuEg4iHIbhnhs78BCHNbSxEQ==}
     engines: {node: '>=12'}
 
   dunder-proto@1.0.1:
@@ -2609,13 +2616,13 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@browserbasehq/stagehand@1.14.0(@playwright/test@1.54.2)(deepmerge@4.3.1)(dotenv@16.6.1)(encoding@0.1.13)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(zod@4.0.14)':
+  '@browserbasehq/stagehand@1.14.0(@playwright/test@1.54.2)(deepmerge@4.3.1)(dotenv@17.2.1)(encoding@0.1.13)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(zod@4.0.14)':
     dependencies:
       '@anthropic-ai/sdk': 0.27.3(encoding@0.1.13)
       '@browserbasehq/sdk': 2.6.0(encoding@0.1.13)
       '@playwright/test': 1.54.2
       deepmerge: 4.3.1
-      dotenv: 16.6.1
+      dotenv: 17.2.1
       openai: 5.11.0(ws@8.18.3)(zod@4.0.14)
       ws: 8.18.3
       zod: 4.0.14
@@ -2846,9 +2853,9 @@ snapshots:
 
   '@js-sdsl/ordered-map@4.4.2': {}
 
-  '@langchain/community@0.3.49(@browserbasehq/sdk@2.6.0(encoding@0.1.13))(@browserbasehq/stagehand@1.14.0(@playwright/test@1.54.2)(deepmerge@4.3.1)(dotenv@16.6.1)(encoding@0.1.13)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(zod@4.0.14))(@huggingface/transformers@3.7.1)(@ibm-cloud/watsonx-ai@1.6.10)(@langchain/core@0.3.66(openai@5.11.0(ws@8.18.3)(zod@4.0.14)))(axios@1.11.0)(cheerio@1.1.2)(chromadb@3.0.10)(encoding@0.1.13)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@25.0.1)(jsonwebtoken@9.0.2)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(playwright@1.54.2)(weaviate-client@3.8.0(encoding@0.1.13))(ws@8.18.3)':
+  '@langchain/community@0.3.49(@browserbasehq/sdk@2.6.0(encoding@0.1.13))(@browserbasehq/stagehand@1.14.0(@playwright/test@1.54.2)(deepmerge@4.3.1)(dotenv@17.2.1)(encoding@0.1.13)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(zod@4.0.14))(@huggingface/transformers@3.7.1)(@ibm-cloud/watsonx-ai@1.6.10)(@langchain/core@0.3.66(openai@5.11.0(ws@8.18.3)(zod@4.0.14)))(axios@1.11.0)(cheerio@1.1.2)(chromadb@3.0.10)(encoding@0.1.13)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@25.0.1)(jsonwebtoken@9.0.2)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(playwright@1.54.2)(weaviate-client@3.8.0(encoding@0.1.13))(ws@8.18.3)':
     dependencies:
-      '@browserbasehq/stagehand': 1.14.0(@playwright/test@1.54.2)(deepmerge@4.3.1)(dotenv@16.6.1)(encoding@0.1.13)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(zod@4.0.14)
+      '@browserbasehq/stagehand': 1.14.0(@playwright/test@1.54.2)(deepmerge@4.3.1)(dotenv@17.2.1)(encoding@0.1.13)(openai@5.11.0(ws@8.18.3)(zod@4.0.14))(zod@4.0.14)
       '@ibm-cloud/watsonx-ai': 1.6.10
       '@langchain/core': 0.3.66(openai@5.11.0(ws@8.18.3)(zod@4.0.14))
       '@langchain/openai': 0.6.3(@langchain/core@0.3.66(openai@5.11.0(ws@8.18.3)(zod@4.0.14)))(ws@8.18.3)
@@ -3483,6 +3490,8 @@ snapshots:
       domhandler: 5.0.3
 
   dotenv@16.6.1: {}
+
+  dotenv@17.2.1: {}
 
   dunder-proto@1.0.1:
     dependencies:

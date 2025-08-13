@@ -1,16 +1,17 @@
 /**
  * Foundation Agent Interfaces for Specialized AI Components
- * 
+ *
  * This file defines the interfaces for the 10 foundational AI agents that form
  * the core of our agentic system. Each agent specializes in a specific aspect
  * of the reasoning and execution pipeline.
  */
 
 export interface FoundationAgentConfig {
-  modelSize: '0.1-1B' | '0.5-2B' | '1-3B' | '1-7B';
+  modelSize: "0.1-1B" | "0.5-2B" | "1-3B" | "1-7B";
   temperature: number;
   maxTokens: number;
   timeout: number;
+  maxCacheSize?: number;
 }
 
 // Base interface for all foundation agents
@@ -24,8 +25,16 @@ export interface IFoundationAgent {
 
 // 1. Retriever Agent - BGE, E5, GTE style semantic search
 export interface IRetrieverAgent extends IFoundationAgent {
-  retrieve(query: string, positiveExamples?: string[], negativeExamples?: string[]): Promise<RetrievalResult[]>;
-  retrieveWithContext(query: string, contextType: 'code' | 'docs' | 'conversation', limit?: number): Promise<RetrievalResult[]>;
+  retrieve(
+    query: string,
+    positiveExamples?: string[],
+    negativeExamples?: string[]
+  ): Promise<RetrievalResult[]>;
+  retrieveWithContext(
+    query: string,
+    contextType: "code" | "docs" | "conversation",
+    limit?: number
+  ): Promise<RetrievalResult[]>;
 }
 
 export interface RetrievalResult {
@@ -33,7 +42,7 @@ export interface RetrievalResult {
   score: number;
   source: string;
   metadata: {
-    type: 'code' | 'docs' | 'context' | 'memory';
+    type: "code" | "docs" | "context" | "memory";
     filePath?: string;
     lineNumber?: number;
     chunkId?: string;
@@ -54,9 +63,15 @@ export interface RerankResult extends RetrievalResult {
 
 // 3. Tool Selector Agent - DPO-style classifier for tool selection
 export interface IToolSelectorAgent extends IFoundationAgent {
-  selectTools(task: string, availableTools: ToolMetadata[]): Promise<ToolSelectionResult>;
+  selectTools(
+    task: string,
+    availableTools: ToolMetadata[]
+  ): Promise<ToolSelectionResult>;
   rankTools(task: string, tools: ToolMetadata[]): Promise<ToolRanking[]>;
-  validateToolSelection(task: string, selectedTools: string[]): Promise<ValidationResult>;
+  validateToolSelection(
+    task: string,
+    selectedTools: string[]
+  ): Promise<ValidationResult>;
 }
 
 export interface ToolMetadata {
@@ -97,13 +112,19 @@ export interface ValidationResult {
 // 4. Critic/Evaluator Agent - HH-RLHF style evaluation
 export interface ICriticAgent extends IFoundationAgent {
   evaluate(prompt: string, answer: string): Promise<EvaluationResult>;
-  critique(response: string, criteria: EvaluationCriteria): Promise<CritiqueResult>;
-  scoreQuality(content: string, type: 'code' | 'text' | 'reasoning'): Promise<QualityScore>;
+  critique(
+    response: string,
+    criteria: EvaluationCriteria
+  ): Promise<CritiqueResult>;
+  scoreQuality(
+    content: string,
+    type: "code" | "text" | "reasoning"
+  ): Promise<QualityScore>;
 }
 
 export interface EvaluationResult {
   score: number; // 0-1
-  rating: 'excellent' | 'good' | 'fair' | 'poor';
+  rating: "excellent" | "good" | "fair" | "poor";
   strengths: string[];
   weaknesses: string[];
   suggestions: string[];
@@ -134,7 +155,7 @@ export interface QualityScore {
     maintainability: number;
   };
   issues: Array<{
-    severity: 'low' | 'medium' | 'high';
+    severity: "low" | "medium" | "high";
     message: string;
     line?: number;
   }>;
@@ -185,7 +206,7 @@ export interface TaskStep {
   parameters: any;
   dependencies: string[];
   estimatedTime: number;
-  priority: 'low' | 'medium' | 'high';
+  priority: "low" | "medium" | "high";
   validation?: string;
 }
 
@@ -200,7 +221,10 @@ export interface Workflow {
 // 6. Query Rewriter Agent - Search query expansion and optimization
 export interface IQueryRewriterAgent extends IFoundationAgent {
   expandQuery(shortQuery: string, context?: string): Promise<ExpandedQuery>;
-  optimizeForSearch(query: string, searchType: 'semantic' | 'keyword' | 'hybrid'): Promise<OptimizedQuery>;
+  optimizeForSearch(
+    query: string,
+    searchType: "semantic" | "keyword" | "hybrid"
+  ): Promise<OptimizedQuery>;
   generateVariations(query: string, count?: number): Promise<QueryVariation[]>;
 }
 
@@ -229,9 +253,18 @@ export interface QueryVariation {
 
 // 7. CoT (Chain of Thought) Generator Agent
 export interface ICoTGeneratorAgent extends IFoundationAgent {
-  generateReasoning(question: string, context?: string): Promise<ChainOfThought>;
-  explainSolution(problem: string, solution: string): Promise<ReasoningExplanation>;
-  validateReasoning(reasoning: string, conclusion: string): Promise<ReasoningValidation>;
+  generateReasoning(
+    question: string,
+    context?: string
+  ): Promise<ChainOfThought>;
+  explainSolution(
+    problem: string,
+    solution: string
+  ): Promise<ReasoningExplanation>;
+  validateReasoning(
+    reasoning: string,
+    conclusion: string
+  ): Promise<ReasoningValidation>;
 }
 
 export interface ChainOfThought {
@@ -264,7 +297,7 @@ export interface ReasoningValidation {
   issues: Array<{
     step: number;
     issue: string;
-    severity: 'low' | 'medium' | 'high';
+    severity: "low" | "medium" | "high";
   }>;
   suggestions: string[];
 }
@@ -273,7 +306,10 @@ export interface ReasoningValidation {
 export interface IChunkScorerAgent extends IFoundationAgent {
   scoreChunk(chunk: string, query: string): Promise<ChunkScore>;
   rankChunks(chunks: string[], query: string): Promise<RankedChunk[]>;
-  extractRelevantPortions(chunk: string, query: string): Promise<RelevantPortion[]>;
+  extractRelevantPortions(
+    chunk: string,
+    query: string
+  ): Promise<RelevantPortion[]>;
 }
 
 export interface ChunkScore {
@@ -337,7 +373,11 @@ export interface IEmbedderAgent extends IFoundationAgent {
   embed(text: string): Promise<number[]>;
   embedBatch(texts: string[]): Promise<number[][]>;
   similarity(embedding1: number[], embedding2: number[]): number;
-  findSimilar(query: number[], embeddings: number[][], threshold?: number): SimilarityResult[];
+  findSimilar(
+    query: number[],
+    embeddings: number[][],
+    threshold?: number
+  ): SimilarityResult[];
 }
 
 export interface SimilarityResult {
@@ -358,7 +398,7 @@ export interface FoundationPipelineConfig {
   chunkScorer: FoundationAgentConfig;
   actionCaller: FoundationAgentConfig;
   embedder: FoundationAgentConfig;
-  
+
   // Pipeline settings
   enableParallelProcessing: boolean;
   maxConcurrency: number;
@@ -376,7 +416,7 @@ export interface FoundationPipelineResult {
   reasoning: ChainOfThought;
   actionCalls: ActionCall[];
   evaluation: EvaluationResult;
-  
+
   // Pipeline metadata
   duration: number;
   stagesCompleted: string[];

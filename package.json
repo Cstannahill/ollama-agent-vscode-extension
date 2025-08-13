@@ -68,6 +68,30 @@
         "title": "Configure Foundation Agent Models",
         "category": "Ollama Agent",
         "icon": "$(gear)"
+      },
+      {
+        "command": "ollamaAgent.lmdeployStatus",
+        "title": "LMDeploy Server Status",
+        "category": "Ollama Agent",
+        "icon": "$(server-process)"
+      },
+      {
+        "command": "ollamaAgent.lmdeployStart",
+        "title": "Start LMDeploy Server",
+        "category": "Ollama Agent",
+        "icon": "$(play)"
+      },
+      {
+        "command": "ollamaAgent.lmdeployStop",
+        "title": "Stop LMDeploy Server",
+        "category": "Ollama Agent",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "ollamaAgent.lmdeployRestart",
+        "title": "Restart LMDeploy Server",
+        "category": "Ollama Agent",
+        "icon": "$(refresh)"
       }
     ],
     "configuration": {
@@ -153,59 +177,89 @@
           "default": 4096,
           "description": "Context window size for the model"
         },
-        "ollamaAgent.vllm.enabled": {
+        "ollamaAgent.lmdeploy.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable experimental vLLM integration for enhanced performance"
+          "description": "Enable LMDeploy integration for superior performance (1.8x faster than vLLM)"
         },
-        "ollamaAgent.vllm.serverUrl": {
+        "ollamaAgent.lmdeploy.serverUrl": {
           "type": "string",
           "default": "http://localhost:11435",
-          "description": "URL of the vLLM server (default: Ollama port + 1)"
+          "description": "URL of the LMDeploy server (default: Ollama port + 1)"
         },
-        "ollamaAgent.vllm.model": {
+        "ollamaAgent.lmdeploy.model": {
           "type": "string",
-          "default": "microsoft/DialoGPT-medium",
-          "description": "Default vLLM model to use"
+          "default": "internlm/internlm2_5-7b-chat",
+          "description": "Default LMDeploy model to use"
         },
-        "ollamaAgent.vllm.maxModelLen": {
+        "ollamaAgent.lmdeploy.sessionLen": {
           "type": "number",
           "default": 2048,
-          "description": "Maximum model sequence length for vLLM"
+          "description": "Maximum session length for LMDeploy"
         },
-        "ollamaAgent.vllm.tensorParallelSize": {
+        "ollamaAgent.lmdeploy.maxBatchSize": {
+          "type": "number",
+          "default": 8,
+          "description": "Maximum batch size for LMDeploy inference"
+        },
+        "ollamaAgent.lmdeploy.tensorParallelSize": {
           "type": "number",
           "default": 1,
-          "description": "Tensor parallel size for vLLM (number of GPUs)"
+          "description": "Tensor parallel size for LMDeploy (number of GPUs)"
         },
-        "ollamaAgent.vllm.gpuMemoryUtilization": {
+        "ollamaAgent.lmdeploy.cacheMaxEntryCount": {
           "type": "number",
-          "default": 0.9,
-          "description": "GPU memory utilization ratio for vLLM (0.0-1.0)"
+          "default": 0.8,
+          "description": "GPU memory utilization ratio for KV cache in LMDeploy (0.0-1.0)"
+        },
+        "ollamaAgent.lmdeploy.engineType": {
+          "type": "string",
+          "enum": [
+            "turbomind",
+            "pytorch"
+          ],
+          "default": "turbomind",
+          "description": "LMDeploy inference engine type (turbomind recommended for performance)"
         },
         "ollamaAgent.routing.chatPreference": {
           "type": "string",
-          "enum": ["ollama", "vllm", "auto"],
+          "enum": [
+            "ollama",
+            "lmdeploy",
+            "auto"
+          ],
           "default": "auto",
           "description": "Preferred provider for chat tasks"
         },
         "ollamaAgent.routing.embeddingPreference": {
           "type": "string",
-          "enum": ["ollama", "vllm", "auto"],
-          "default": "vllm",
-          "description": "Preferred provider for embedding tasks (vLLM recommended)"
+          "enum": [
+            "ollama",
+            "lmdeploy",
+            "auto"
+          ],
+          "default": "lmdeploy",
+          "description": "Preferred provider for embedding tasks (LMDeploy recommended for 1.8x better throughput)"
         },
         "ollamaAgent.routing.toolCallingPreference": {
           "type": "string",
-          "enum": ["ollama", "vllm", "auto"],
+          "enum": [
+            "ollama",
+            "lmdeploy",
+            "auto"
+          ],
           "default": "ollama",
           "description": "Preferred provider for tool calling (Ollama recommended)"
         },
         "ollamaAgent.routing.batchProcessingPreference": {
           "type": "string",
-          "enum": ["ollama", "vllm", "auto"],
-          "default": "vllm",
-          "description": "Preferred provider for batch processing (vLLM recommended)"
+          "enum": [
+            "ollama",
+            "lmdeploy",
+            "auto"
+          ],
+          "default": "lmdeploy",
+          "description": "Preferred provider for batch processing (LMDeploy recommended for superior batch performance)"
         },
         "ollamaAgent.routing.preferSpeed": {
           "type": "boolean",
@@ -222,10 +276,10 @@
           "default": 10000,
           "description": "Timeout in milliseconds before falling back to alternative provider"
         },
-        "ollamaAgent.foundation.enableVLLMOptimization": {
+        "ollamaAgent.foundation.enableLMDeployOptimization": {
           "type": "boolean",
           "default": true,
-          "description": "Use vLLM for foundation pipeline optimization when available"
+          "description": "Use LMDeploy for foundation pipeline optimization when available (provides 1.8x throughput improvement)"
         },
         "ollamaAgent.foundation.models.retriever": {
           "type": "string",
@@ -233,7 +287,7 @@
           "description": "Model for Retriever Agent (semantic search and content retrieval)"
         },
         "ollamaAgent.foundation.models.reranker": {
-          "type": "string", 
+          "type": "string",
           "default": "gemma3:1b",
           "description": "Model for Reranker Agent (cross-encoder document scoring)"
         },
@@ -365,6 +419,7 @@
     "chalk": "^5.4.1",
     "cheerio": "^1.0.0",
     "chromadb": "^3.0.10",
+    "dotenv": "^17.2.1",
     "jsdom": "^25.0.1",
     "langchain": "^0.3.30",
     "node-fetch": "^3.3.2",

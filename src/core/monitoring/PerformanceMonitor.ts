@@ -37,7 +37,7 @@ export interface PerformanceInsights {
   optimizations: string[];
   providerComparison: {
     ollama: ProviderStats;
-    vllm: ProviderStats;
+    lmdeploy: ProviderStats;
   };
   overallHealth: 'excellent' | 'good' | 'fair' | 'poor';
 }
@@ -85,8 +85,8 @@ export class PerformanceMonitor {
       consecutiveFailures: 0
     });
     
-    this.healthChecks.set('vllm', {
-      provider: 'vllm',
+    this.healthChecks.set('lmdeploy', {
+      provider: 'lmdeploy',
       available: false,
       latency: 0,
       lastCheck: new Date(),
@@ -263,16 +263,16 @@ export class PerformanceMonitor {
    */
   generateInsights(): PerformanceInsights {
     const ollamaStats = this.calculateProviderStats('ollama');
-    const vllmStats = this.calculateProviderStats('vllm');
+    const lmdeployStats = this.calculateProviderStats('lmdeploy');
     
     const recommendations: string[] = [];
     const bottlenecks: string[] = [];
     const optimizations: string[] = [];
 
     // Performance analysis
-    if (ollamaStats.avgLatency > vllmStats.avgLatency * 1.5) {
-      recommendations.push("Consider routing more tasks to vLLM for better latency");
-    } else if (vllmStats.avgLatency > ollamaStats.avgLatency * 1.5) {
+    if (ollamaStats.avgLatency > lmdeployStats.avgLatency * 1.5) {
+      recommendations.push("Consider routing more tasks to LMDeploy for better latency");
+    } else if (lmdeployStats.avgLatency > ollamaStats.avgLatency * 1.5) {
       recommendations.push("Consider routing more tasks to Ollama for better latency");
     }
 
@@ -280,16 +280,16 @@ export class PerformanceMonitor {
       bottlenecks.push("Ollama experiencing reliability issues");
     }
     
-    if (vllmStats.successRate < 0.9) {
-      bottlenecks.push("vLLM experiencing reliability issues");
+    if (lmdeployStats.successRate < 0.9) {
+      bottlenecks.push("LMDeploy experiencing reliability issues");
     }
 
     // Throughput optimizations
-    if (vllmStats.throughput > ollamaStats.throughput * 2) {
-      optimizations.push("Use vLLM for batch processing and high-throughput tasks");
+    if (lmdeployStats.throughput > ollamaStats.throughput * 2) {
+      optimizations.push("Use LMDeploy for batch processing and high-throughput tasks");
     }
 
-    if (ollamaStats.successRate > vllmStats.successRate) {
+    if (ollamaStats.successRate > lmdeployStats.successRate) {
       optimizations.push("Use Ollama for critical tasks requiring high reliability");
     }
 
@@ -302,9 +302,9 @@ export class PerformanceMonitor {
     }
 
     // Calculate overall health
-    const avgSuccessRate = (ollamaStats.successRate + vllmStats.successRate) / 2;
-    const avgLatency = (ollamaStats.avgLatency + vllmStats.avgLatency) / 2;
-    const avgAvailability = (ollamaStats.availability + vllmStats.availability) / 2;
+    const avgSuccessRate = (ollamaStats.successRate + lmdeployStats.successRate) / 2;
+    const avgLatency = (ollamaStats.avgLatency + lmdeployStats.avgLatency) / 2;
+    const avgAvailability = (ollamaStats.availability + lmdeployStats.availability) / 2;
     
     let overallHealth: 'excellent' | 'good' | 'fair' | 'poor';
     if (avgSuccessRate > 0.95 && avgLatency < 1000 && avgAvailability > 0.95) {
@@ -323,7 +323,7 @@ export class PerformanceMonitor {
       optimizations,
       providerComparison: {
         ollama: ollamaStats,
-        vllm: vllmStats
+        lmdeploy: lmdeployStats
       },
       overallHealth
     };

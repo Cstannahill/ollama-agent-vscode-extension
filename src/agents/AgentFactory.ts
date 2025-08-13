@@ -43,6 +43,11 @@ export class AgentFactory {
   private llm: OllamaLLM;
   private config: AgentFactoryConfig;
   private smartRouter?: SmartAgentRouter;
+  
+  // Idempotency guards for duplicate initialization prevention
+  private static initializationInProgress = false;
+  private static lastInitializationTime = 0;
+  private static readonly INITIALIZATION_DEBOUNCE_MS = 5000; // 5 second debounce
 
   constructor(
     private agentConfig: AgentConfig,
@@ -66,7 +71,8 @@ export class AgentFactory {
     });
 
     this.initializeTaskKeywords();
-    this.initializeAgents();
+    // NOTE: Agent initialization is deferred to first use to avoid constructor async issues
+    // this.initializeAgents() will be called lazily when agents are first needed
     
     // Initialize smart router if enabled
     if (this.config.useSmartRouter) {
@@ -117,27 +123,93 @@ export class AgentFactory {
   }
 
   /**
-   * Initialize all available agents
+   * Initialize all available agents (single call during construction)
    */
   private async initializeAgents(): Promise<void> {
+    // Prevent duplicate initialization with enhanced guards
+    if (this.areAgentsInitialized()) {
+      logger.debug("[AGENT_FACTORY] Agents already initialized, skipping...");
+      return;
+    }
+
+    // Check for concurrent initialization attempts
+    const currentTime = Date.now();
+    if (AgentFactory.initializationInProgress) {
+      logger.warn("[AGENT_FACTORY] Duplicate initialization attempt detected - another initialization in progress, waiting...");
+      // Wait for current initialization to complete instead of blocking
+      let attempts = 0;
+      while (AgentFactory.initializationInProgress && attempts < 30) { // 30 seconds timeout
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        attempts++;
+      }
+      if (this.areAgentsInitialized()) {
+        logger.info("[AGENT_FACTORY] Agents initialized by concurrent process");
+        return;
+      }
+      logger.warn("[AGENT_FACTORY] Concurrent initialization timed out, proceeding anyway");
+    }
+
+    // Debounce rapid initialization attempts 
+    if (currentTime - AgentFactory.lastInitializationTime < AgentFactory.INITIALIZATION_DEBOUNCE_MS) {
+      logger.warn(`[AGENT_FACTORY] Rapid initialization attempt blocked - only ${currentTime - AgentFactory.lastInitializationTime}ms since last attempt`);
+      return;
+    }
+
+    // Set guards
+    AgentFactory.initializationInProgress = true;
+    AgentFactory.lastInitializationTime = currentTime;
     try {
-      // Create foundation-enhanced BasicAgent as primary general agent
+      // Log caller stack trace to debug duplicate initialization triggers
+      const stack = new Error().stack;
+      const caller = stack?.split('\n')[3]?.trim() || 'unknown caller';
+      logger.info(`[AGENT_FACTORY] Initializing agents (one-time setup) - called from: ${caller}`);
+      
+      // Create foundation-enhanced BasicAgent as primary general agent with timeout
+      logger.info("[AGENT_FACTORY] Creating FoundationBasicAgent...");
       const foundationBasicAgent = new FoundationBasicAgent(
         {
           ollamaUrl: this.agentConfig.ollamaUrl,
           model: this.agentConfig.model,
           temperature: 0.3,
           enableFoundationPipeline: true,
-          extensionConfig: this.extensionConfig // Pass full config for vLLM support
+          extensionConfig: this.extensionConfig // Pass full config for LMDeploy support
         },
         this.toolManager,
         this.contextManager!
       );
+      
+      // Initialize FoundationBasicAgent with timeout
+      logger.info("[AGENT_FACTORY] Initializing FoundationBasicAgent...");
+      try {
+        await Promise.race([
+          foundationBasicAgent.initialize(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('FoundationBasicAgent initialization timeout')), 30000)
+          )
+        ]);
+        logger.info("[AGENT_FACTORY] FoundationBasicAgent initialized successfully");
+      } catch (error) {
+        logger.error("[AGENT_FACTORY] FoundationBasicAgent initialization failed:", error);
+        // Continue with fallback agent
+      }
+      
       this.agents.set(AgentSpecialization.GENERAL, foundationBasicAgent);
 
-      // Also create fallback BasicAgent
+      // Also create fallback BasicAgent with timeout
+      logger.info("[AGENT_FACTORY] Creating fallback BasicAgent...");
       const basicAgent = new BasicAgent(this.agentConfig, this.toolManager, this.contextManager);
-      await basicAgent.initialize();
+      try {
+        await Promise.race([
+          basicAgent.initialize(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('BasicAgent initialization timeout')), 15000)
+          )
+        ]);
+        logger.info("[AGENT_FACTORY] BasicAgent initialized successfully");
+      } catch (error) {
+        logger.error("[AGENT_FACTORY] BasicAgent initialization failed:", error);
+        // Continue anyway - specialized agents might still work
+      }
       // Store as fallback but don't override the foundation agent
       
       // Initialize specialized agents
@@ -164,17 +236,29 @@ export class AgentFactory {
       const refactoringAgent = new RefactoringAgent(this.agentConfig, this.toolManager, this.contextManager);
       this.agents.set(AgentSpecialization.REFACTORING, refactoringAgent);
 
-      logger.info(`[AGENT_FACTORY] Initialized ${this.agents.size} agents with foundation-enhanced general agent`);
+      logger.info(`[AGENT_FACTORY] Successfully initialized ${this.agents.size} agents with foundation-enhanced general agent`);
     } catch (error) {
       logger.error("[AGENT_FACTORY] Failed to initialize agents:", error);
-      throw error;
+      // Don't rethrow - allow system to continue with partial initialization
+    } finally {
+      // Always clear the initialization lock
+      AgentFactory.initializationInProgress = false;
+      logger.debug("[AGENT_FACTORY] Initialization lock released");
     }
+  }
+
+  /**
+   * Check if agents are already initialized (prevents duplicate initialization)
+   */
+  private areAgentsInitialized(): boolean {
+    return this.agents.size > 0;
   }
 
   /**
    * Register a new agent type
    */
   public registerAgent(specialization: AgentSpecialization, agent: IAgent): void {
+    // Initialize agents map if needed (but don't run full initialization)
     this.agents.set(specialization, agent);
     logger.info(`[AGENT_FACTORY] Registered ${specialization} agent`);
   }
@@ -183,6 +267,9 @@ export class AgentFactory {
    * Get the most appropriate agent for a given task
    */
   public async selectBestAgent(task: string, context?: any, progressCallback?: ProgressCallback): Promise<{agent: IAgent; analysis: TaskAnalysis; routerDecision?: RouterDecision}> {
+    // Ensure agents are initialized before selection (lazy initialization)
+    await this.initializeAgents();
+    
     const sessionId = `agent_selection_${Date.now()}`;
     
     // Create agent context for factory logging
@@ -440,6 +527,9 @@ export class AgentFactory {
     progressCallback?: (response: AgentResponse) => void
   ): Promise<AgentResponse> {
     try {
+      // Ensure agents are initialized (lazy initialization) - selectBestAgent will also call this
+      await this.initializeAgents();
+      
       const { agent, analysis } = await this.selectBestAgent(task, context);
       
       const response = await agent.executeTask(task, undefined, {
@@ -471,9 +561,12 @@ export class AgentFactory {
   }
 
   /**
-   * Get all available agents
+   * Get all available agents (with lazy initialization)
    */
-  public getAvailableAgents(): Array<{specialization: AgentSpecialization; agent: IAgent}> {
+  public async getAvailableAgents(): Promise<Array<{specialization: AgentSpecialization; agent: IAgent}>> {
+    // Ensure agents are initialized before returning them
+    await this.initializeAgents();
+    
     return Array.from(this.agents.entries()).map(([specialization, agent]) => ({
       specialization,
       agent
@@ -481,16 +574,29 @@ export class AgentFactory {
   }
 
   /**
-   * Get agent by specialization
+   * Get agent by specialization (with lazy initialization)
    */
-  public getAgent(specialization: AgentSpecialization): IAgent | undefined {
+  public async getAgent(specialization: AgentSpecialization): Promise<IAgent | undefined> {
+    // Ensure agents are initialized before getting specific agent
+    await this.initializeAgents();
+    
     return this.agents.get(specialization);
   }
 
   /**
-   * Check if a specific agent type is available
+   * Get agent by specialization (sync version - returns undefined if not initialized)
    */
-  public hasAgent(specialization: AgentSpecialization): boolean {
+  public getAgentSync(specialization: AgentSpecialization): IAgent | undefined {
+    return this.agents.get(specialization);
+  }
+
+  /**
+   * Check if a specific agent type is available (with lazy initialization)
+   */
+  public async hasAgent(specialization: AgentSpecialization): Promise<boolean> {
+    // Ensure agents are initialized before checking availability
+    await this.initializeAgents();
+    
     return this.agents.has(specialization);
   }
 
@@ -503,14 +609,24 @@ export class AgentFactory {
   }
 
   /**
-   * Get factory statistics
+   * Explicitly initialize agents (public method for pre-initialization)
    */
-  public getStatistics(): {
+  public async initialize(): Promise<void> {
+    await this.initializeAgents();
+  }
+
+  /**
+   * Get factory statistics (with lazy initialization)
+   */
+  public async getStatistics(): Promise<{
     totalAgents: number;
     availableSpecializations: AgentSpecialization[];
     defaultAgent: AgentSpecialization;
     selectionThreshold: number;
-  } {
+  }> {
+    // Ensure agents are initialized before getting statistics
+    await this.initializeAgents();
+    
     return {
       totalAgents: this.agents.size,
       availableSpecializations: Array.from(this.agents.keys()),

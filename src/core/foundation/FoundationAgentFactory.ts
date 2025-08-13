@@ -34,6 +34,18 @@ import { CoTGeneratorAgent } from "./agents/CoTGeneratorAgent";
 import { ChunkScorerAgent } from "./agents/ChunkScorerAgent";
 import { ActionCallerAgent } from "./agents/ActionCallerAgent";
 import { EmbedderAgent } from "./agents/EmbedderAgent";
+import { 
+  DisabledRetrieverAgent,
+  DisabledRerankerAgent,
+  DisabledToolSelectorAgent,
+  DisabledCriticAgent,
+  DisabledTaskPlannerAgent,
+  DisabledQueryRewriterAgent,
+  DisabledCoTGeneratorAgent,
+  DisabledChunkScorerAgent,
+  DisabledActionCallerAgent,
+  DisabledEmbedderAgentImpl
+} from "./agents/DisabledFoundationAgent";
 import { FoundationPipeline } from "./FoundationPipeline";
 import { LLMRouter } from "../../api/llm-router";
 import { ExtensionConfig } from "../../config";
@@ -62,55 +74,174 @@ export interface FoundationAgents {
 }
 
 /**
- * Factory for creating and managing foundation agents
+ * Singleton Factory for creating and managing foundation agents
  */
 export class FoundationAgentFactory {
   protected dependencies: FoundationAgentDependencies;
   protected config: FoundationPipelineConfig;
   protected agents?: FoundationAgents;
   protected initialized = false;
+  
+  // Thread-safety for concurrent createAgents() calls
+  protected creationPromise?: Promise<FoundationAgents>;
+  protected isCreating = false;
+  
+  // Singleton pattern implementation
+  private static instance: FoundationAgentFactory | null = null;
+  private static instanceKey: string | null = null;
 
-  constructor(
+  protected constructor(
     dependencies: FoundationAgentDependencies,
     config: Partial<FoundationPipelineConfig> = {}
   ) {
+    const stack = new Error().stack;
+    const callerInfo = stack?.split('\n')[2]?.trim() || 'unknown caller';
+    logger.info(`[FOUNDATION_FACTORY] NEW FACTORY INSTANCE created for model: ${dependencies.model}`);
+    logger.debug(`[FOUNDATION_FACTORY] Factory constructor called from: ${callerInfo}`);
+    
     this.dependencies = dependencies;
     this.config = this.buildDefaultConfig(config);
+  }
+  
+  /**
+   * Get or create singleton instance of FoundationAgentFactory
+   */
+  public static getInstance(
+    dependencies?: FoundationAgentDependencies,
+    config?: Partial<FoundationPipelineConfig>
+  ): FoundationAgentFactory {
+    // Create a unique key based on configuration INCLUDING foundation models
+    const newKey = dependencies ? 
+      `${dependencies.ollamaUrl}|${dependencies.model}|${dependencies.extensionConfig?.lmdeploy?.enabled || false}|${JSON.stringify(dependencies.extensionConfig?.foundation?.models || {})}` :
+      'default';
+    
+    // Return existing instance if configuration matches
+    if (FoundationAgentFactory.instance && FoundationAgentFactory.instanceKey === newKey) {
+      logger.debug(`[FOUNDATION_FACTORY] Returning existing singleton instance`);
+      logger.debug(`[FOUNDATION_FACTORY] Cached foundation models: ${JSON.stringify(dependencies?.extensionConfig?.foundation?.models || {}, null, 2)}`);
+      return FoundationAgentFactory.instance;
+    }
+    
+    // Create new instance if configuration changed or no instance exists
+    if (dependencies) {
+      logger.info(`[FOUNDATION_FACTORY] Creating new singleton instance (config changed)`);
+      logger.info(`[FOUNDATION_FACTORY] Foundation models being used: ${JSON.stringify(dependencies.extensionConfig?.foundation?.models || {}, null, 2)}`);
+      FoundationAgentFactory.instance = new FoundationAgentFactory(dependencies, config || {});
+      FoundationAgentFactory.instanceKey = newKey;
+    } else if (!FoundationAgentFactory.instance) {
+      throw new Error("FoundationAgentFactory: Cannot create instance without dependencies on first call");
+    }
+    
+    return FoundationAgentFactory.instance!;
+  }
+  
+  /**
+   * Reset singleton instance (for testing/cleanup)
+   */
+  public static resetInstance(): void {
+    FoundationAgentFactory.instance = null;
+    FoundationAgentFactory.instanceKey = null;
+    logger.debug("[FOUNDATION_FACTORY] Singleton instance reset");
   }
 
   /**
    * Get the model for a specific foundation agent
    */
   protected getModelForAgent(agentType: keyof FoundationAgents): string {
-    if (!this.dependencies.extensionConfig?.foundation.models) {
+    // Enhanced debugging to understand configuration state
+    logger.info(`[FOUNDATION_FACTORY] ⚡ Checking model for agent: ${agentType}`);
+    logger.info(`[FOUNDATION_FACTORY] Extension config exists: ${!!this.dependencies.extensionConfig}`);
+    logger.info(`[FOUNDATION_FACTORY] Foundation config exists: ${!!this.dependencies.extensionConfig?.foundation}`);
+    logger.info(`[FOUNDATION_FACTORY] Foundation models config exists: ${!!this.dependencies.extensionConfig?.foundation?.models}`);
+    logger.info(`[FOUNDATION_FACTORY] Default model fallback: ${this.dependencies.model}`);
+    
+    if (this.dependencies.extensionConfig?.foundation?.models) {
+      logger.info(`[FOUNDATION_FACTORY] All foundation models config: ${JSON.stringify(this.dependencies.extensionConfig.foundation.models, null, 2)}`);
+      const specificModel = this.dependencies.extensionConfig.foundation.models[agentType];
+      logger.info(`[FOUNDATION_FACTORY] Model for ${agentType}: "${specificModel}" (type: ${typeof specificModel})`);
+    } else {
+      logger.warn(`[FOUNDATION_FACTORY] No foundation models config found! Using default: ${this.dependencies.model}`);
+    }
+    
+    // Debug the full config structure
+    if (this.dependencies.extensionConfig) {
+      logger.debug(`[FOUNDATION_FACTORY] Full foundation config: ${JSON.stringify({
+        foundation: this.dependencies.extensionConfig.foundation,
+        model: this.dependencies.model
+      }, null, 2)}`);
+    } else {
+      logger.warn(`[FOUNDATION_FACTORY] No extension config at all! This is the problem.`);
+    }
+
+    // Check if the extension config and foundation models exist
+    const foundationModels = this.dependencies.extensionConfig?.foundation?.models;
+    
+    if (!foundationModels) {
       logger.debug(
-        `[FOUNDATION_FACTORY] No per-agent models configured, using default: ${this.dependencies.model}`
+        `[FOUNDATION_FACTORY] No foundation models config found, using default: ${this.dependencies.model}`
       );
       return this.dependencies.model; // Fallback to default model
     }
 
-    const configuredModel =
-      this.dependencies.extensionConfig.foundation.models[agentType];
-    const finalModel = configuredModel || this.dependencies.model;
+    const configuredModel = foundationModels[agentType];
+    
+    // Handle three cases:
+    // 1. undefined/null: No configuration, use default
+    // 2. empty string: User explicitly set no model, prevent default usage
+    // 3. actual string: Use specified model
+    if (configuredModel === undefined || configuredModel === null) {
+      logger.info(
+        `[FOUNDATION_FACTORY] ${agentType} agent using default model: ${this.dependencies.model} (not configured)`
+      );
+      return this.dependencies.model;
+    }
+    
+    if (configuredModel === "") {
+      logger.warn(
+        `[FOUNDATION_FACTORY] ${agentType} agent has empty model configuration - agent creation will be skipped`
+      );
+      throw new Error(`Agent ${agentType} has no model configured. Use the Foundation Models panel to configure a model.`);
+    }
 
     logger.info(
-      `[FOUNDATION_FACTORY] ${agentType} agent using model: ${finalModel}${
-        configuredModel ? " (configured)" : " (default)"
-      }`
+      `[FOUNDATION_FACTORY] ${agentType} agent using configured model: ${configuredModel}`
     );
-
-    // Return configured model if available, otherwise fallback to default
-    return finalModel;
+    return configuredModel;
   }
 
   /**
-   * Create all foundation agents
+   * Create all foundation agents (thread-safe)
    */
   async createAgents(): Promise<FoundationAgents> {
+    // Return existing agents if already created
     if (this.agents && this.initialized) {
       return this.agents;
     }
 
+    // If creation is already in progress, wait for it to complete
+    if (this.isCreating && this.creationPromise) {
+      logger.debug("[FOUNDATION_FACTORY] Agent creation already in progress, waiting...");
+      return this.creationPromise;
+    }
+
+    // Start creation process
+    this.isCreating = true;
+    this.creationPromise = this.performAgentCreation();
+
+    try {
+      const agents = await this.creationPromise;
+      return agents;
+    } finally {
+      // Reset creation state when done (success or failure)
+      this.isCreating = false;
+      this.creationPromise = undefined;
+    }
+  }
+
+  /**
+   * Internal method that performs the actual agent creation
+   */
+  protected async performAgentCreation(): Promise<FoundationAgents> {
     try {
       logger.info("[FOUNDATION_FACTORY] Creating foundation agents...");
 
@@ -155,8 +286,13 @@ export class FoundationAgentFactory {
       };
 
       const creationTime = Date.now() - startTime;
+      
+      // Count enabled vs disabled agents
+      const enabledAgents = Object.values(this.agents).filter(agent => agent.isInitialized()).length;
+      const disabledAgents = 10 - enabledAgents;
+
       logger.info(
-        `[FOUNDATION_FACTORY] Created all 10 foundation agents in ${creationTime}ms`
+        `[FOUNDATION_FACTORY] Created all 10 foundation agents in ${creationTime}ms (${enabledAgents} enabled, ${disabledAgents} disabled)`
       );
 
       return this.agents;
@@ -297,102 +433,161 @@ export class FoundationAgentFactory {
    * Create individual agents
    */
   protected async createRetrieverAgent(): Promise<IRetrieverAgent> {
-    const model = this.getModelForAgent("retriever");
-    return new RetrieverAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.dependencies.contextManager,
-      this.dependencies.vectorDatabase,
-      this.config.retriever
-    );
+    try {
+      const model = this.getModelForAgent("retriever");
+      return new RetrieverAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.dependencies.contextManager,
+        this.dependencies.vectorDatabase,
+        this.config.retriever
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping RetrieverAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledRetrieverAgent();
+    }
   }
 
   protected async createRerankerAgent(): Promise<IRerankerAgent> {
-    const model = this.getModelForAgent("reranker");
-    return new RerankerAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.config.reranker
-    );
+    try {
+      const model = this.getModelForAgent("reranker");
+      return new RerankerAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.config.reranker
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping RerankerAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledRerankerAgent();
+    }
   }
 
   protected async createToolSelectorAgent(): Promise<IToolSelectorAgent> {
-    const model = this.getModelForAgent("toolSelector");
-    return new ToolSelectorAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.dependencies.toolManager,
-      this.config.toolSelector
-    );
+    try {
+      const model = this.getModelForAgent("toolSelector");
+      return new ToolSelectorAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.dependencies.toolManager,
+        this.config.toolSelector
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping ToolSelectorAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledToolSelectorAgent();
+    }
   }
 
   protected async createCriticAgent(): Promise<ICriticAgent> {
-    const model = this.getModelForAgent("critic");
-    return new CriticAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.config.critic
-    );
+    try {
+      const model = this.getModelForAgent("critic");
+      return new CriticAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.config.critic
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping CriticAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledCriticAgent();
+    }
   }
 
   protected async createTaskPlannerAgent(): Promise<ITaskPlannerAgent> {
-    const model = this.getModelForAgent("taskPlanner");
-    return new TaskPlannerAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.dependencies.contextManager,
-      this.dependencies.vectorDatabase,
-      this.config.taskPlanner
-    );
+    try {
+      const model = this.getModelForAgent("taskPlanner");
+      logger.info(`[FOUNDATION_FACTORY] 🎯 Creating TaskPlannerAgent with model: ${model}`);
+      return new TaskPlannerAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.dependencies.contextManager,
+        this.dependencies.vectorDatabase,
+        this.config.taskPlanner
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping TaskPlannerAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledTaskPlannerAgent();
+    }
   }
 
   protected async createQueryRewriterAgent(): Promise<IQueryRewriterAgent> {
-    const model = this.getModelForAgent("queryRewriter");
-    return new QueryRewriterAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.config.queryRewriter
-    );
+    try {
+      const model = this.getModelForAgent("queryRewriter");
+      return new QueryRewriterAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.config.queryRewriter
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping QueryRewriterAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledQueryRewriterAgent();
+    }
   }
 
   protected async createCoTGeneratorAgent(): Promise<ICoTGeneratorAgent> {
-    const model = this.getModelForAgent("cotGenerator");
-    return new CoTGeneratorAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.dependencies.contextManager,
-      this.dependencies.vectorDatabase,
-      this.config.cotGenerator
-    );
+    try {
+      const model = this.getModelForAgent("cotGenerator");
+      logger.info(`[FOUNDATION_FACTORY] 🧠 Creating CoTGeneratorAgent with model: ${model}`);
+      return new CoTGeneratorAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.dependencies.contextManager,
+        this.dependencies.vectorDatabase,
+        this.config.cotGenerator
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping CoTGeneratorAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledCoTGeneratorAgent();
+    }
   }
 
   protected async createChunkScorerAgent(): Promise<IChunkScorerAgent> {
-    const model = this.getModelForAgent("chunkScorer");
-    return new ChunkScorerAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.config.chunkScorer
-    );
+    try {
+      const model = this.getModelForAgent("chunkScorer");
+      return new ChunkScorerAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.config.chunkScorer
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping ChunkScorerAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledChunkScorerAgent();
+    }
   }
 
   protected async createActionCallerAgent(): Promise<IActionCallerAgent> {
-    const model = this.getModelForAgent("actionCaller");
-    return new ActionCallerAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.dependencies.contextManager,
-      this.dependencies.vectorDatabase,
-      this.config.actionCaller
-    );
+    try {
+      const model = this.getModelForAgent("actionCaller");
+      return new ActionCallerAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.dependencies.contextManager,
+        this.dependencies.vectorDatabase,
+        this.dependencies.toolManager,
+        this.config.actionCaller
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping ActionCallerAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      return new DisabledActionCallerAgent();
+    }
   }
 
   protected async createEmbedderAgent(): Promise<IEmbedderAgent> {
-    const model = this.getModelForAgent("embedder");
-    return new EmbedderAgent(
-      this.dependencies.ollamaUrl,
-      model,
-      this.config.embedder
-    );
+    try {
+      const model = this.getModelForAgent("embedder");
+      logger.info(`[FOUNDATION_FACTORY] Creating EmbedderAgent with model: ${model}`);
+      const stack = new Error().stack;
+      const callerInfo = stack?.split('\n')[2]?.trim() || 'unknown caller';
+      logger.debug(`[FOUNDATION_FACTORY] createEmbedderAgent called from: ${callerInfo}`);
+      
+      return new EmbedderAgent(
+        this.dependencies.ollamaUrl,
+        model,
+        this.config.embedder
+      );
+    } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Skipping EmbedderAgent creation: ${error instanceof Error ? error.message : String(error)}`);
+      // Return a disabled agent that will report as not initialized
+      return new DisabledEmbedderAgentImpl();
+    }
   }
 
   /**
@@ -607,6 +802,7 @@ export class FoundationAgentFactory {
       await Promise.race([testFn(), timeout]);
       return { healthy: true };
     } catch (error) {
+      logger.warn(`[FOUNDATION_FACTORY] Health check failed for ${name}:`, error);
       return {
         healthy: false,
         error: error instanceof Error ? error.message : String(error),

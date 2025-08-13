@@ -1,10 +1,48 @@
 import * as vscode from "vscode";
+import * as dotenv from "dotenv";
+import * as path from "path";
 import {
   registerCommands,
   reinitializeAgent,
   setContextManager,
   setSidebarProvider,
 } from "./commands/registerCommands";
+
+// Load environment variables early in extension activation
+try {
+  const envPath = path.resolve(__dirname, '../.env');
+  console.log('[EXTENSION] Attempting to load .env from:', envPath);
+  const result = dotenv.config({ path: envPath });
+  if (result.error) {
+    console.error('[EXTENSION] dotenv config error:', result.error);
+  } else {
+    console.log('[EXTENSION] dotenv config successful, parsed:', Object.keys(result.parsed || {}));
+  }
+  
+  console.log('[EXTENSION] Current working directory:', process.cwd());
+  console.log('[EXTENSION] Extension __dirname:', __dirname);
+  console.log('[EXTENSION] Resolved env path:', envPath);
+  
+  // Check if .env file exists
+  const fs = require('fs');
+  try {
+    fs.accessSync(envPath, fs.constants.F_OK);
+    console.log('[EXTENSION] .env file exists at:', envPath);
+  } catch (fsError) {
+    console.error('[EXTENSION] .env file does not exist at:', envPath);
+  }
+  
+  console.log('[EXTENSION] Cloud ChromaDB env vars:', {
+    hasApiKey: !!process.env.CHROMA_API_KEY,
+    hasTenant: !!process.env.CHROMA_TENANT,
+    hasDatabase: !!process.env.CHROMA_DATABASE,
+    apiKeyValue: process.env.CHROMA_API_KEY ? process.env.CHROMA_API_KEY.substring(0, 10) + '...' : 'NOT SET',
+    tenantValue: process.env.CHROMA_TENANT || 'NOT SET',
+    databaseValue: process.env.CHROMA_DATABASE || 'NOT SET'
+  });
+} catch (error) {
+  console.warn('[EXTENSION] Failed to load .env file:', error);
+}
 import { getToolManager } from "./core/ToolManager";
 import { ContextManager } from "./core/ContextManager";
 import { logger } from "./utils/logger";
@@ -16,6 +54,10 @@ import { FoundationAgentFactory } from "./core/foundation/FoundationAgentFactory
 import { OptimizedFoundationAgentFactory } from "./core/foundation/OptimizedFoundationAgentFactory";
 import { AgentPreloader } from "./core/foundation/AgentPreloader";
 import { getConfig } from "./config";
+import { CacheManager } from "./core/cache/CacheManager";
+import { CacheWarmer } from "./core/cache/CacheWarmer";
+import { CacheHealthMonitor } from "./core/cache/CacheHealthMonitor";
+import { LMDeployServerManager } from "./services/LMDeployServerManager";
 
 /**
  * Extension activation function
@@ -37,6 +79,21 @@ export function activate(context: vscode.ExtensionContext) {
     const contextManager = ContextManager.getInstance(context);
     logger.info("Context manager initialized");
 
+    // Initialize cache management system with health monitoring
+    const cacheManager = CacheManager.getInstance();
+    const cacheWarmer = CacheWarmer.getInstance();
+    const cacheHealthMonitor = CacheHealthMonitor.getInstance();
+    logger.info("Cache management system initialized with health monitoring");
+
+    // Initialize LMDeploy server manager and start auto-startup
+    const lmdeployServerManager = LMDeployServerManager.getInstance(context.extensionPath);
+    context.subscriptions.push({
+      dispose: () => lmdeployServerManager.dispose()
+    });
+    
+    // Auto-startup disabled - server must be started manually
+    logger.info("[EXTENSION] LMDeploy auto-startup disabled. Use Command Palette 'Start LMDeploy Server' to start manually.");
+
     // Initialize context manager first, then perform health check
     setTimeout(async () => {
       try {
@@ -52,6 +109,18 @@ export function activate(context: vscode.ExtensionContext) {
         if (healthCheck.error) {
           logger.warn(`[EXTENSION] Context DB Error: ${healthCheck.error}`);
         }
+
+        // Start cache warming after context initialization
+        await cacheWarmer.warmupAll(toolManager, {
+          enableToolCache: true,
+          enableAgentCache: true,
+          enableEmbeddingCache: true,
+          maxWarmupTimeMs: 3000
+        });
+
+        // Start cache maintenance schedule
+        cacheWarmer.startMaintenanceSchedule();
+
       } catch (error) {
         logger.warn(
           "[EXTENSION] Failed to perform context health check:",
@@ -91,11 +160,16 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Listen for configuration changes
     context.subscriptions.push(
-      vscode.workspace.onDidChangeConfiguration((event) => {
+      vscode.workspace.onDidChangeConfiguration(async (event) => {
         if (event.affectsConfiguration("ollamaAgent")) {
           logger.info("Configuration changed, reinitializing agent");
           logger.updateLogLevel();
           reinitializeAgent();
+          
+          // Handle LMDeploy server configuration changes (auto-restart disabled)
+          if (event.affectsConfiguration("ollamaAgent.lmdeploy")) {
+            logger.info("LMDeploy configuration changed. Auto-restart disabled - please restart server manually if needed.");
+          }
         }
       })
     );
@@ -136,6 +210,24 @@ export function activate(context: vscode.ExtensionContext) {
  */
 export function deactivate() {
   logger.info("Ollama Agent extension is deactivating...");
+  
+  try {
+    // Cleanup cache management system
+    const cacheManager = CacheManager.getInstance();
+    const cacheWarmer = CacheWarmer.getInstance();
+    const cacheHealthMonitor = CacheHealthMonitor.getInstance();
+    
+    // Stop health monitoring first
+    cacheHealthMonitor.stopMonitoring();
+    
+    // Stop maintenance schedule and cleanup caches
+    cacheWarmer.performMaintenance();
+    cacheManager.destroyAll();
+    logger.info("Cache management system cleaned up successfully");
+  } catch (error) {
+    logger.warn("Failed to cleanup cache management system:", error);
+  }
+
   try {
     const contextManager =
       require("./core/ContextManager").ContextManager.getInstance();
@@ -146,6 +238,19 @@ export function deactivate() {
   } catch (error) {
     logger.warn("Failed to close ContextDB on shutdown:", error);
   }
+
+  try {
+    // Cleanup tool manager caches
+    const toolManager = require("./core/ToolManager").getToolManager();
+    if (toolManager && typeof toolManager.destroy === "function") {
+      toolManager.destroy();
+      logger.info("ToolManager cleaned up successfully");
+    }
+  } catch (error) {
+    logger.warn("Failed to cleanup ToolManager:", error);
+  }
+
+  logger.info("Ollama Agent extension deactivated successfully");
 }
 
 /**
@@ -209,8 +314,8 @@ function startBackgroundFoundationInitialization(
       const toolManager = getToolManager();
       const contextManager = ContextManager.getInstance(context);
 
-      // Create optimized factory with advanced caching and performance monitoring
-      const optimizedFactory = new OptimizedFoundationAgentFactory({
+      // Create optimized factory with advanced caching and performance monitoring (using singleton)
+      const optimizedFactory = OptimizedFoundationAgentFactory.getInstance({
         ollamaUrl: config.ollamaUrl,
         model: config.model,
         toolManager,
@@ -285,7 +390,7 @@ function startBackgroundFoundationInitialization(
         const toolManager = getToolManager();
         const contextManager = ContextManager.getInstance(context);
         
-        const basicFactory = new FoundationAgentFactory({
+        const basicFactory = FoundationAgentFactory.getInstance({
           ollamaUrl: config.ollamaUrl,
           model: config.model,
           toolManager,

@@ -53,15 +53,70 @@ export class ContextManager {
         workspacePath: vscode.workspace.workspaceFolders[0].uri.fsPath,
         maxFileSize: 1024 * 1024, // 1MB
         excludePatterns: [
-          '**/node_modules/**',
-          '**/dist/**',
-          '**/build/**',
-          '**/target/**',
+          // Version control
           '**/.git/**',
+          '**/.svn/**',
+          '**/.hg/**',
+          
+          // Node.js
+          '**/node_modules/**',
+          
+          // Python virtual environments
+          '**/venv/**',
+          '**/env/**',
+          '**/.venv/**',
+          '**/__pycache__/**',
+          '**/site-packages/**',
+          
+          // Build outputs
+          '**/build/**',
+          '**/dist/**',
+          '**/out/**',
+          '**/target/**',
+          
+          // Rust specific
+          '**/target/**',
+          '**/Cargo.lock',
+          '**/*.pdb',
+          '**/*.exe',
+          '**/*.dll',
+          
+          // Framework specific
+          '**/.next/**',
+          '.next/**',
+          '**/.nuxt/**',
+          
+          // Package managers
+          '**/vendor/**',
+          '**/Pods/**',
+          
+          // Caches
+          '**/.cache/**',
           '**/coverage/**',
-          '**/*.log',
-          '**/tmp/**',
+          '**/logs/**',
+          '**/.tmp/**',
           '**/temp/**',
+          
+          // IDE and system files  
+          '**/.gradle/**',
+          '**/gradle/**',
+          '**/cmake-build-*/**',
+          '**/DerivedData/**',
+          '**/.dart_tool/**',
+          '**/packages/**',
+          '**/.pub-cache/**',
+          '**/bin/**',
+          '**/obj/**',
+          
+          // Log files
+          '**/*.log',
+          
+          // Hidden files (but allow important config files)
+          '**/.*',
+          '!**/.env.example',
+          '!**/.gitignore',
+          '!**/.eslintrc*',
+          '!**/.prettierrc*'
         ],
         includePatterns: [
           '**/*.ts',

@@ -1,10 +1,11 @@
-import { ChromaClient, Collection, IncludeEnum } from "chromadb";
+import { ChromaClient, CloudClient, Collection, IncludeEnum } from "chromadb";
 import { DefaultEmbeddingFunction } from "@chroma-core/default-embed";
 import * as path from "path";
 import * as fs from "fs/promises";
 import * as vscode from "vscode";
 import { logger } from "../utils/logger";
 import { extensionContextProvider } from "../utils/ExtensionContextProvider";
+// Environment variables should be loaded by extension.ts at startup
 
 export interface DocumentChunk {
   id: string;
@@ -44,7 +45,9 @@ export interface SearchOptions {
 
 /**
  * Vector database for storing and searching documentation
- * Uses ChromaDB for local, persistent vector storage
+ * Uses ChromaDB for cloud or local persistent vector storage
+ * Cloud mode: Uses CHROMA_API_KEY, CHROMA_TENANT, CHROMA_DATABASE from .env
+ * Local mode: Fallback to local ChromaDB server
  */
 export class VectorDatabase {
   private static instance: VectorDatabase;
@@ -53,14 +56,20 @@ export class VectorDatabase {
   private readonly collectionName = "documentation";
   private readonly dbPath: string;
   private isInitialized = false;
+  private initializationAttempted = false;
+  private lastInitializationAttempt = 0;
+  private readonly INITIALIZATION_COOLDOWN = 60000; // 1 minute cooldown between retries
 
   private constructor() {
     this.dbPath = this.getDatabasePath();
+    console.log("GETDBPATH:", this.dbPath);
   }
 
   static getInstance(): VectorDatabase {
     if (!VectorDatabase.instance) {
       VectorDatabase.instance = new VectorDatabase();
+      // Force initialization log to help debug
+      console.log("[VECTOR_DB] Creating VectorDatabase singleton instance");
     }
     return VectorDatabase.instance;
   }
@@ -70,6 +79,7 @@ export class VectorDatabase {
     // Falls back to user's home directory if context is not available
     try {
       const globalStoragePath = extensionContextProvider.getGlobalStoragePath();
+      console.log("GLOBAL_STORAGE_PATH:", globalStoragePath);
       if (globalStoragePath) {
         return path.join(globalStoragePath, ".chroma");
       }
@@ -109,45 +119,122 @@ export class VectorDatabase {
         return;
       }
 
+      // Prevent frequent re-initialization attempts
+      const now = Date.now();
+      if (this.initializationAttempted && !this.isInitialized) {
+        if (
+          now - this.lastInitializationAttempt <
+          this.INITIALIZATION_COOLDOWN
+        ) {
+          logger.debug(
+            `[VECTOR_DB] Skipping initialization - cooldown period (${Math.round(
+              (this.INITIALIZATION_COOLDOWN -
+                (now - this.lastInitializationAttempt)) /
+                1000
+            )}s remaining)`
+          );
+          return;
+        }
+      }
+
+      this.lastInitializationAttempt = now;
+      this.initializationAttempted = true;
+
       logger.info("[VECTOR_DB] Initializing ChromaDB...");
       logger.debug(`[VECTOR_DB] Database path: ${this.dbPath}`);
 
       // Check if ChromaDB is available
-      try {
-        const ChromaClient = require("chromadb").ChromaClient;
-        logger.debug("[VECTOR_DB] ChromaDB package found");
-      } catch (error) {
-        logger.error(
-          "[VECTOR_DB] ChromaDB package not found or not installed:",
-          error
-        );
-        throw new Error(
-          "ChromaDB package not found. Please install chromadb package."
-        );
+
+      // Check if we're using cloud configuration
+      const chromaApiKey = process.env.CHROMA_API_KEY;
+      const chromaTenant = process.env.CHROMA_TENANT;
+      const chromaDatabase = process.env.CHROMA_DATABASE;
+      const isCloudMode = chromaApiKey && chromaTenant && chromaDatabase;
+
+      logger.debug(
+        `[VECTOR_DB] Environment check - API Key: ${
+          chromaApiKey ? "present" : "missing"
+        }, Tenant: ${chromaTenant ? "present" : "missing"}, Database: ${
+          chromaDatabase ? "present" : "missing"
+        }`
+      );
+      logger.debug(
+        `[VECTOR_DB] Cloud mode: ${isCloudMode ? "enabled" : "disabled"}`
+      );
+
+      // Only create local database directory if not using cloud
+      if (!isCloudMode) {
+        try {
+          await fs.mkdir(this.dbPath, { recursive: true });
+          logger.debug(
+            `[VECTOR_DB] Created local database directory: ${this.dbPath}`
+          );
+        } catch (error) {
+          logger.error(
+            `[VECTOR_DB] Failed to create database directory: ${this.dbPath}`,
+            error
+          );
+          throw new Error(`Failed to create database directory: ${error}`);
+        }
       }
 
-      // Ensure database directory exists
+      // Initialize ChromaDB client (cloud or local)
       try {
-        await fs.mkdir(this.dbPath, { recursive: true });
-        logger.debug(`[VECTOR_DB] Created database directory: ${this.dbPath}`);
-      } catch (error) {
-        logger.error(
-          `[VECTOR_DB] Failed to create database directory: ${this.dbPath}`,
-          error
-        );
-        throw new Error(`Failed to create database directory: ${error}`);
-      }
+        const chromaApiKey = process.env.CHROMA_API_KEY;
+        const chromaTenant = process.env.CHROMA_TENANT;
+        const chromaDatabase = process.env.CHROMA_DATABASE;
 
-      // Initialize ChromaDB client (v3.0+ uses HTTP client)
-      try {
-        // Try different initialization approaches for ChromaDB 3.0+
-        this.client = new ChromaClient();
+        if (chromaApiKey && chromaTenant && chromaDatabase) {
+          // Cloud configuration using modern ChromaDB client format
+          logger.info(
+            "[VECTOR_DB] Initializing ChromaDB with cloud configuration..."
+          );
+          logger.debug(
+            `[VECTOR_DB] Cloud config details - API Key: ${chromaApiKey.substring(
+              0,
+              10
+            )}..., Tenant: ${chromaTenant}, Database: ${chromaDatabase}`
+          );
 
-        // Test the connection
-        await this.client.heartbeat();
-        logger.debug(
-          "[VECTOR_DB] ChromaDB client created and server is reachable"
-        );
+          this.client = new CloudClient({
+            apiKey: chromaApiKey,
+            tenant: chromaTenant,
+            database: chromaDatabase,
+          });
+          logger.info(
+            `[VECTOR_DB] Using cloud ChromaDB - Tenant: ${chromaTenant}, Database: ${chromaDatabase}`
+          );
+        } else {
+          // Local fallback configuration
+          logger.info(
+            "[VECTOR_DB] No cloud config found, using local ChromaDB..."
+          );
+          this.client = new ChromaClient();
+          logger.debug("[VECTOR_DB] Using local ChromaDB server");
+        }
+
+        // Test the connection with detailed error logging
+        try {
+          logger.debug("[VECTOR_DB] Testing ChromaDB connection...");
+          await this.client.heartbeat();
+          logger.info(
+            "[VECTOR_DB] ChromaDB client created and server is reachable"
+          );
+        } catch (connectionError) {
+          logger.error("[VECTOR_DB] ChromaDB connection test failed:", {
+            error:
+              connectionError instanceof Error
+                ? connectionError.message
+                : String(connectionError),
+            stack:
+              connectionError instanceof Error
+                ? connectionError.stack
+                : undefined,
+            isCloudMode: !!(chromaApiKey && chromaTenant && chromaDatabase),
+            endpoint: chromaApiKey ? "https://api.trychroma.com" : "local",
+          });
+          throw connectionError;
+        }
       } catch (error) {
         logger.warn(
           "[VECTOR_DB] ChromaDB server not available, falling back to no-op mode:",
@@ -155,6 +242,8 @@ export class VectorDatabase {
         );
         // Don't throw error, just log warning and continue with degraded functionality
         this.client = null;
+        // Still mark as initialized to prevent constant retries
+        this.isInitialized = true;
         return;
       }
 
@@ -177,7 +266,7 @@ export class VectorDatabase {
         return;
       }
 
-      // Get or create collection
+      // Get or create collection with permission-aware error handling
       try {
         this.collection = await this.client.getCollection({
           name: this.collectionName,
@@ -185,10 +274,13 @@ export class VectorDatabase {
         });
         logger.info("[VECTOR_DB] Connected to existing collection");
       } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         logger.debug(
-          "[VECTOR_DB] Collection doesn't exist, creating new one:",
-          error
+          "[VECTOR_DB] Collection doesn't exist, attempting to create:",
+          errorMessage
         );
+
         try {
           this.collection = await this.client.createCollection({
             name: this.collectionName,
@@ -199,6 +291,27 @@ export class VectorDatabase {
           });
           logger.info("[VECTOR_DB] Created new collection");
         } catch (createError) {
+          const createErrorMessage =
+            createError instanceof Error
+              ? createError.message
+              : String(createError);
+
+          // Handle permission errors gracefully
+          if (
+            createErrorMessage.toLowerCase().includes("unauthorized") ||
+            createErrorMessage.toLowerCase().includes("permission")
+          ) {
+            logger.warn(
+              `[VECTOR_DB] Limited permissions for collection creation: ${createErrorMessage}`
+            );
+            logger.warn(
+              "[VECTOR_DB] Collection operations may be restricted - this may be normal for read-only API keys"
+            );
+            // Mark as initialized but without a collection - operations will gracefully fail
+            this.isInitialized = true;
+            return;
+          }
+
           logger.error("[VECTOR_DB] Failed to create collection:", createError);
           throw new Error(`Failed to create collection: ${createError}`);
         }
@@ -211,9 +324,12 @@ export class VectorDatabase {
         error instanceof Error ? error.message : String(error);
       logger.error("[VECTOR_DB] Initialization failed:", errorMessage, error);
 
-      // Set a flag to indicate ChromaDB is not available
-      this.isInitialized = false;
-      throw new Error(`Failed to initialize vector database: ${errorMessage}`);
+      // Mark as initialized even if failed to prevent constant retries
+      // The system will fall back to no-op mode
+      this.isInitialized = true;
+      logger.warn(
+        `[VECTOR_DB] Initialization failed, falling back to no-op mode: ${errorMessage}`
+      );
     }
   }
 
@@ -225,6 +341,19 @@ export class VectorDatabase {
         "[VECTOR_DB] ChromaDB not available, skipping document addition"
       );
       return;
+    }
+
+    // Try to get/create collection if we don't have one
+    if (!this.collection && this.client) {
+      try {
+        await this.ensureCollection();
+      } catch (error) {
+        logger.warn(
+          "[VECTOR_DB] Could not ensure collection exists, skipping document addition:",
+          error
+        );
+        return;
+      }
     }
 
     try {
@@ -290,12 +419,30 @@ export class VectorDatabase {
             }: ${processed}/${validDocuments.length} documents`
           );
         } catch (batchError: any) {
+          const batchErrorMessage =
+            batchError instanceof Error
+              ? batchError.message
+              : String(batchError);
+
           logger.error(
             `[VECTOR_DB] Failed to add batch ${
               Math.ceil(i / batchSize) + 1
             }/${Math.ceil(validDocuments.length / batchSize)}:`,
             batchError
           );
+
+          // Handle permission errors gracefully
+          if (
+            batchErrorMessage.toLowerCase().includes("unauthorized") ||
+            batchErrorMessage.toLowerCase().includes("permission")
+          ) {
+            logger.warn(
+              `[VECTOR_DB] Permission denied for document addition: ${batchErrorMessage}`
+            );
+            logger.warn("[VECTOR_DB] API key may have read-only permissions");
+            // Continue processing but log warning
+            continue;
+          }
 
           // Log detailed error information for ChromaValueError
           if (
@@ -317,7 +464,7 @@ export class VectorDatabase {
             continue;
           }
 
-          throw batchError; // Re-throw non-ChromaValueError errors
+          throw batchError; // Re-throw other errors
         }
       }
 
@@ -339,6 +486,26 @@ export class VectorDatabase {
     if (!this.isAvailable()) {
       logger.warn(
         "[VECTOR_DB] ChromaDB not available, returning empty search results"
+      );
+      return [];
+    }
+
+    // Try to ensure collection access
+    if (!this.collection && this.client) {
+      try {
+        await this.ensureCollection();
+      } catch (error) {
+        logger.warn(
+          "[VECTOR_DB] Could not access collection for search, returning empty results:",
+          error
+        );
+        return [];
+      }
+    }
+
+    if (!this.collection) {
+      logger.warn(
+        "[VECTOR_DB] No collection access available, returning empty search results"
       );
       return [];
     }
@@ -525,6 +692,26 @@ export class VectorDatabase {
       return { count: 0, sources: [], languages: [], frameworks: [] };
     }
 
+    // Try to ensure collection access
+    if (!this.collection && this.client) {
+      try {
+        await this.ensureCollection();
+      } catch (error) {
+        logger.debug(
+          "[VECTOR_DB] Could not access collection for stats, returning empty stats:",
+          error
+        );
+        return { count: 0, sources: [], languages: [], frameworks: [] };
+      }
+    }
+
+    if (!this.collection) {
+      logger.debug(
+        "[VECTOR_DB] No collection access available, returning empty stats"
+      );
+      return { count: 0, sources: [], languages: [], frameworks: [] };
+    }
+
     try {
       const results = await this.collection!.get({
         include: ["metadatas" as IncludeEnum],
@@ -556,6 +743,23 @@ export class VectorDatabase {
 
       return stats;
     } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      // Handle permission errors gracefully
+      if (
+        errorMessage.toLowerCase().includes("unauthorized") ||
+        errorMessage.toLowerCase().includes("permission")
+      ) {
+        logger.debug(
+          `[VECTOR_DB] Permission denied for collection stats: ${errorMessage}`
+        );
+        logger.debug(
+          "[VECTOR_DB] API key may have read-only permissions - returning empty stats"
+        );
+        return { count: 0, sources: [], languages: [], frameworks: [] };
+      }
+
       logger.error("[VECTOR_DB] Failed to get stats:", error);
       return { count: 0, sources: [], languages: [], frameworks: [] };
     }
@@ -660,6 +864,26 @@ export class VectorDatabase {
       return { documentCount: 0 };
     }
 
+    // Try to ensure collection access
+    if (!this.collection && this.client) {
+      try {
+        await this.ensureCollection();
+      } catch (error) {
+        logger.debug(
+          `[VECTOR_DB] Could not access collection for stats source ${source}, returning empty stats:`,
+          error
+        );
+        return { documentCount: 0 };
+      }
+    }
+
+    if (!this.collection) {
+      logger.debug(
+        `[VECTOR_DB] No collection access available, returning empty stats for source ${source}`
+      );
+      return { documentCount: 0 };
+    }
+
     try {
       const results = await this.collection!.get({
         where: { source: source },
@@ -684,6 +908,23 @@ export class VectorDatabase {
         lastUpdated,
       };
     } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      // Handle permission errors gracefully
+      if (
+        errorMessage.toLowerCase().includes("unauthorized") ||
+        errorMessage.toLowerCase().includes("permission")
+      ) {
+        logger.debug(
+          `[VECTOR_DB] Permission denied for source stats ${source}: ${errorMessage}`
+        );
+        logger.debug(
+          "[VECTOR_DB] API key may have read-only permissions - returning empty stats"
+        );
+        return { documentCount: 0 };
+      }
+
       logger.error(
         `[VECTOR_DB] Failed to get stats for source ${source}:`,
         error
@@ -714,21 +955,91 @@ export class VectorDatabase {
 
   private async ensureInitialized(): Promise<void> {
     if (!this.isInitialized) {
-      try {
-        await this.initialize();
-      } catch (error) {
+      await this.initialize();
+    }
+  }
+
+  private async ensureCollection(): Promise<void> {
+    if (!this.client) {
+      throw new Error("No ChromaDB client available");
+    }
+
+    if (this.collection) {
+      return; // Collection already available
+    }
+
+    // Create embedding function (required for ChromaDB 3.0+)
+    let embeddingFunction;
+    try {
+      const {
+        DefaultEmbeddingFunction,
+      } = require("@chroma-core/default-embed");
+      embeddingFunction = new DefaultEmbeddingFunction();
+      logger.debug(
+        "[VECTOR_DB] Created DefaultEmbeddingFunction for collection access"
+      );
+    } catch (error) {
+      logger.error("[VECTOR_DB] Failed to create embedding function:", error);
+      throw new Error(`Failed to create embedding function: ${error}`);
+    }
+
+    // Try to get existing collection first
+    try {
+      this.collection = await this.client.getCollection({
+        name: this.collectionName,
+        embeddingFunction,
+      });
+      logger.info(
+        "[VECTOR_DB] Successfully connected to existing documentation collection"
+      );
+      return;
+    } catch (error) {
+      logger.debug(
+        "[VECTOR_DB] Documentation collection doesn't exist, attempting to create"
+      );
+    }
+
+    // Try to create collection if it doesn't exist
+    try {
+      this.collection = await this.client.createCollection({
+        name: this.collectionName,
+        embeddingFunction,
+        metadata: {
+          description: "Documentation embeddings for agent assistance",
+        },
+      });
+      logger.info(
+        "[VECTOR_DB] Successfully created new documentation collection"
+      );
+    } catch (createError) {
+      const createErrorMessage =
+        createError instanceof Error
+          ? createError.message
+          : String(createError);
+
+      // Handle permission errors gracefully
+      if (
+        createErrorMessage.toLowerCase().includes("unauthorized") ||
+        createErrorMessage.toLowerCase().includes("permission")
+      ) {
         logger.warn(
-          "[VECTOR_DB] ChromaDB not available, falling back to no-op mode"
+          `[VECTOR_DB] Limited permissions for collection creation: ${createErrorMessage}`
         );
-        // Don't throw error, just log warning and continue with degraded functionality
+        logger.warn(
+          "[VECTOR_DB] API key may have read-only permissions - collection operations will be restricted"
+        );
+        // Don't throw - we can still work without collection access
+        return;
       }
+
+      logger.error("[VECTOR_DB] Failed to create collection:", createError);
+      throw new Error(`Failed to create collection: ${createError}`);
     }
   }
 
   private isAvailable(): boolean {
-    return (
-      this.isInitialized && this.client !== null && this.collection !== null
-    );
+    // Database is available if we have a client connection, even without collection access
+    return this.isInitialized && this.client !== null;
   }
 
   private validateDocuments(documents: DocumentChunk[]): DocumentChunk[] {
@@ -870,7 +1181,165 @@ export class VectorDatabase {
       this.client = null;
       this.collection = null;
       this.isInitialized = false;
+      this.initializationAttempted = false;
+      this.lastInitializationAttempt = 0;
       logger.info("[VECTOR_DB] Closed database connection");
+    }
+  }
+
+  /**
+   * Force reinitialize the database (bypasses cooldown)
+   * Useful for retry attempts when cloud connection is restored
+   */
+  async forceReinitialize(): Promise<void> {
+    logger.info("[VECTOR_DB] Forcing database reinitialization...");
+    this.isInitialized = false;
+    this.initializationAttempted = false;
+    this.lastInitializationAttempt = 0;
+    this.client = null;
+    this.collection = null;
+    await this.initialize();
+  }
+
+  /**
+   * Test what collections are available and accessible with current API key
+   */
+  async testCloudAccess(): Promise<void> {
+    await this.ensureInitialized();
+
+    if (!this.client) {
+      logger.warn("[VECTOR_DB] No client available for cloud access test");
+      return;
+    }
+
+    try {
+      logger.info("[VECTOR_DB] Testing cloud ChromaDB access...");
+
+      // Test heartbeat
+      await this.client.heartbeat();
+      logger.info(
+        "[VECTOR_DB] ✓ Heartbeat successful - server connection working"
+      );
+
+      // Try to list collections
+      try {
+        const collections = await this.client.listCollections();
+        logger.info(
+          `[VECTOR_DB] ✓ Collection listing successful - found ${collections.length} collections:`
+        );
+        collections.forEach((collection, index) => {
+          logger.info(
+            `[VECTOR_DB]   ${index + 1}. ${collection.name} (${
+              collection.metadata
+                ? JSON.stringify(collection.metadata)
+                : "no metadata"
+            })`
+          );
+        });
+
+        // Check if our documentation collection exists
+        const docCollection = collections.find(
+          (c) => c.name === this.collectionName
+        );
+        if (docCollection) {
+          logger.info(
+            `[VECTOR_DB] ✓ Documentation collection '${this.collectionName}' exists in cloud`
+          );
+
+          // Try to access it
+          try {
+            const {
+              DefaultEmbeddingFunction,
+            } = require("@chroma-core/default-embed");
+            const embeddingFunction = new DefaultEmbeddingFunction();
+
+            this.collection = await this.client.getCollection({
+              name: this.collectionName,
+              embeddingFunction,
+            });
+            logger.info(
+              "[VECTOR_DB] ✓ Successfully connected to existing documentation collection"
+            );
+
+            // Try to get collection count
+            try {
+              const count = await this.collection.count();
+              logger.info(
+                `[VECTOR_DB] ✓ Collection contains ${count} documents`
+              );
+            } catch (countError) {
+              logger.warn(
+                "[VECTOR_DB] ⚠ Could not get collection count:",
+                countError
+              );
+            }
+          } catch (getError) {
+            logger.warn(
+              "[VECTOR_DB] ⚠ Could not access documentation collection:",
+              getError
+            );
+          }
+        } else {
+          logger.info(
+            `[VECTOR_DB] ⚠ Documentation collection '${this.collectionName}' does not exist in cloud`
+          );
+          logger.info(
+            "[VECTOR_DB] Available collections:",
+            collections.map((c) => c.name).join(", ")
+          );
+        }
+      } catch (listError) {
+        const listErrorMessage =
+          listError instanceof Error ? listError.message : String(listError);
+        if (
+          listErrorMessage.toLowerCase().includes("unauthorized") ||
+          listErrorMessage.toLowerCase().includes("permission")
+        ) {
+          logger.warn(
+            "[VECTOR_DB] ⚠ API key does not have permission to list collections"
+          );
+          logger.info(
+            "[VECTOR_DB] Attempting to access documentation collection directly..."
+          );
+
+          // Try to access our collection directly
+          try {
+            const {
+              DefaultEmbeddingFunction,
+            } = require("@chroma-core/default-embed");
+            const embeddingFunction = new DefaultEmbeddingFunction();
+
+            this.collection = await this.client.getCollection({
+              name: this.collectionName,
+              embeddingFunction,
+            });
+            logger.info(
+              "[VECTOR_DB] ✓ Successfully accessed documentation collection directly"
+            );
+
+            try {
+              const count = await this.collection.count();
+              logger.info(
+                `[VECTOR_DB] ✓ Collection contains ${count} documents`
+              );
+            } catch (countError) {
+              logger.warn(
+                "[VECTOR_DB] ⚠ Could not get collection count:",
+                countError
+              );
+            }
+          } catch (directAccessError) {
+            logger.warn(
+              "[VECTOR_DB] ⚠ Could not access documentation collection directly:",
+              directAccessError
+            );
+          }
+        } else {
+          logger.error("[VECTOR_DB] ✗ Failed to list collections:", listError);
+        }
+      }
+    } catch (testError) {
+      logger.error("[VECTOR_DB] ✗ Cloud access test failed:", testError);
     }
   }
 }

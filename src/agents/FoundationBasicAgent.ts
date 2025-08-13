@@ -34,7 +34,7 @@ import {
   FoundationPipelineResult 
 } from "../core/foundation/IFoundationAgent";
 import { LLMRouter, ProviderConfig, RoutingPreferences } from "../api/llm-router";
-import { VLLMConfig } from "../api/vllm";
+import { LMDeployConfig } from "../api/lmdeploy";
 
 // Base agent imports
 import {
@@ -116,6 +116,16 @@ export class FoundationBasicAgent implements IAgent {
   private foundationAgents?: FoundationAgents;
   private llmRouter?: LLMRouter;
   private foundationInitialized = false;
+  
+  // Agent caching system
+  private static foundationCache: Map<string, FoundationAgentFactory> = new Map();
+  private static pipelineCache: Map<string, FoundationPipeline> = new Map();
+  private cacheKey: string;
+  
+  // Retry logic configuration
+  private maxRetryAttempts = 3;
+  private retryDelayMs = 1000;
+  private currentRetryAttempt = 0;
 
   constructor(
     config: FoundationBasicAgentConfig,
@@ -140,18 +150,123 @@ export class FoundationBasicAgent implements IAgent {
     this.toolManager = toolManager;
     this.contextManager = contextManager;
     this.vectorDB = vectorDB;
+    
+    // Generate cache key based on configuration
+    this.cacheKey = this.generateCacheKey(config);
+  }
+  
+  /**
+   * Generate cache key for foundation agents
+   */
+  private generateCacheKey(config: FoundationBasicAgentConfig): string {
+    const keyComponents = [
+      config.ollamaUrl,
+      config.model,
+      config.enableFoundationPipeline ? 'foundation' : 'basic',
+      config.extensionConfig?.lmdeploy?.enabled ? 'lmdeploy' : 'ollama-only',
+      // Include foundation models config to invalidate cache when models change
+      JSON.stringify(config.extensionConfig?.foundation?.models || {})
+    ];
+    return keyComponents.join('|');
+  }
+  
+  /**
+   * Try to restore agents from cache
+   */
+  private tryRestoreFromCache(): boolean {
+    try {
+      // Check if foundation factory is cached
+      const cachedFactory = FoundationBasicAgent.foundationCache.get(this.cacheKey);
+      if (cachedFactory) {
+        logger.info("[FOUNDATION_AGENT] Restoring foundation factory from cache");
+        this.foundationFactory = cachedFactory;
+        
+        // Get the foundation agents from factory
+        if (cachedFactory.getInitializationStatus && Object.values(cachedFactory.getInitializationStatus()).some(status => status)) {
+          this.foundationAgents = (cachedFactory as any).agents;
+          
+          // Check for cached pipeline
+          const cachedPipeline = FoundationBasicAgent.pipelineCache.get(this.cacheKey);
+          if (cachedPipeline) {
+            logger.info("[FOUNDATION_AGENT] Restoring foundation pipeline from cache");
+            this.foundationPipeline = cachedPipeline;
+            this.foundationInitialized = true;
+            return true;
+          }
+        }
+      }
+      
+      return false;
+    } catch (error) {
+      logger.warn("[FOUNDATION_AGENT] Failed to restore from cache:", error);
+      return false;
+    }
+  }
+  
+  /**
+   * Cache foundation agents for reuse
+   */
+  private cacheFoundationSystem(): void {
+    try {
+      if (this.foundationFactory) {
+        FoundationBasicAgent.foundationCache.set(this.cacheKey, this.foundationFactory);
+        logger.debug("[FOUNDATION_AGENT] Cached foundation factory");
+      }
+      
+      if (this.foundationPipeline) {
+        FoundationBasicAgent.pipelineCache.set(this.cacheKey, this.foundationPipeline);
+        logger.debug("[FOUNDATION_AGENT] Cached foundation pipeline");
+      }
+    } catch (error) {
+      logger.warn("[FOUNDATION_AGENT] Failed to cache foundation system:", error);
+    }
   }
 
   /**
-   * Initialize the foundation pipeline
+   * Clear all foundation system caches (useful when models are updated)
+   */
+  public static clearFoundationCaches(): void {
+    logger.info("[FOUNDATION_AGENT] Clearing all foundation system caches...");
+    FoundationBasicAgent.foundationCache.clear();
+    FoundationBasicAgent.pipelineCache.clear();
+    // Also clear the FoundationAgentFactory singleton
+    FoundationAgentFactory.resetInstance();
+    
+    // Clear OptimizedFoundationAgentFactory singleton too
+    try {
+      const { OptimizedFoundationAgentFactory } = require('../core/foundation/OptimizedFoundationAgentFactory');
+      OptimizedFoundationAgentFactory.resetInstance();
+      logger.info("[FOUNDATION_AGENT] Also cleared OptimizedFoundationAgentFactory singleton");
+    } catch (error) {
+      logger.debug("[FOUNDATION_AGENT] OptimizedFoundationAgentFactory not available for reset:", error);
+    }
+    
+    logger.info("[FOUNDATION_AGENT] All foundation caches cleared");
+  }
+
+  /**
+   * Initialize the foundation pipeline with caching support
    */
   async initializeFoundationSystem(): Promise<void> {
     if (this.foundationInitialized || !this.config.enableFoundationPipeline) {
+      logger.debug("[FOUNDATION_AGENT] Foundation system already initialized or disabled");
       return;
+    }
+    
+    // Try to restore from cache first
+    if (this.tryRestoreFromCache()) {
+      logger.info("[FOUNDATION_AGENT] Successfully restored foundation system from cache");
+      return;
+    }
+
+    // Prevent concurrent initialization
+    if (this.foundationInitialized === false) {
+      this.foundationInitialized = true; // Set immediately to prevent race conditions
     }
 
     try {
       logger.info("[FOUNDATION_AGENT] Initializing foundation pipeline...");
+      logger.info(`[FOUNDATION_AGENT] Foundation models config: ${JSON.stringify(this.config.extensionConfig?.foundation?.models || {}, null, 2)}`);
 
       // Initialize LLMRouter if ExtensionConfig is available
       if (this.config.extensionConfig) {
@@ -161,21 +276,23 @@ export class FoundationBasicAgent implements IAgent {
             model: this.config.extensionConfig.model,
             temperature: this.config.extensionConfig.temperature
           },
-          vllm: {
-            baseUrl: this.config.extensionConfig.vllm.serverUrl,
-            model: this.config.extensionConfig.vllm.model,
-            maxModelLen: this.config.extensionConfig.vllm.maxModelLen,
-            tensorParallelSize: this.config.extensionConfig.vllm.tensorParallelSize,
-            gpuMemoryUtilization: this.config.extensionConfig.vllm.gpuMemoryUtilization
+          lmdeploy: {
+            baseUrl: this.config.extensionConfig.lmdeploy.serverUrl,
+            model: this.config.extensionConfig.lmdeploy.model,
+            sessionLen: this.config.extensionConfig.lmdeploy.sessionLen,
+            maxBatchSize: this.config.extensionConfig.lmdeploy.maxBatchSize,
+            tensorParallelSize: this.config.extensionConfig.lmdeploy.tensorParallelSize,
+            cacheMaxEntryCount: this.config.extensionConfig.lmdeploy.cacheMaxEntryCount,
+            engineType: this.config.extensionConfig.lmdeploy.engineType
           },
-          vllmEnabled: this.config.extensionConfig.vllm.enabled
+          lmdeployEnabled: this.config.extensionConfig.lmdeploy.enabled
         };
 
         const routingPreferences: RoutingPreferences = {
-          chatPreference: this.config.extensionConfig.routing.chatPreference as "ollama" | "vllm",
-          embeddingPreference: this.config.extensionConfig.routing.embeddingPreference as "ollama" | "vllm",
-          toolCallingPreference: this.config.extensionConfig.routing.toolCallingPreference as "ollama" | "vllm",
-          batchProcessingPreference: this.config.extensionConfig.routing.batchProcessingPreference as "ollama" | "vllm",
+          chatPreference: this.config.extensionConfig.routing.chatPreference as "ollama" | "lmdeploy",
+          embeddingPreference: this.config.extensionConfig.routing.embeddingPreference as "ollama" | "lmdeploy",
+          toolCallingPreference: this.config.extensionConfig.routing.toolCallingPreference as "ollama" | "lmdeploy",
+          batchProcessingPreference: this.config.extensionConfig.routing.batchProcessingPreference as "ollama" | "lmdeploy",
           preferSpeed: this.config.extensionConfig.routing.preferSpeed,
           preferAccuracy: false, // Default
           smallModelThreshold: "7b",
@@ -185,7 +302,7 @@ export class FoundationBasicAgent implements IAgent {
         };
 
         this.llmRouter = new LLMRouter(providerConfig, routingPreferences);
-        logger.info(`🎯 [FOUNDATION_AGENT] LLMRouter initialized with vLLM ${this.config.extensionConfig.vllm.enabled ? 'ENABLED' : 'DISABLED'}`);
+        logger.info(`🎯 [FOUNDATION_AGENT] LLMRouter initialized with LMDeploy ${this.config.extensionConfig.lmdeploy.enabled ? 'ENABLED' : 'DISABLED'}`);
       }
 
       // Create foundation agent factory
@@ -199,7 +316,7 @@ export class FoundationBasicAgent implements IAgent {
         extensionConfig: this.config.extensionConfig // Pass full extension config for per-agent models
       };
 
-      this.foundationFactory = new FoundationAgentFactory(
+      this.foundationFactory = FoundationAgentFactory.getInstance(
         dependencies,
         this.config.foundationConfig || {}
       );
@@ -217,12 +334,39 @@ export class FoundationBasicAgent implements IAgent {
       await this.foundationPipeline.initialize();
 
       this.foundationInitialized = true;
+      
+      // Cache the successfully initialized system
+      this.cacheFoundationSystem();
+      
       logger.info("[FOUNDATION_AGENT] Foundation pipeline initialized successfully");
 
     } catch (error) {
       logger.error("[FOUNDATION_AGENT] Failed to initialize foundation pipeline:", error);
-      // Continue without foundation pipeline
-      this.config.enableFoundationPipeline = false;
+      // Reset initialization flag to allow retry, don't permanently disable
+      this.foundationInitialized = false;
+      
+      // Increment retry counter and potentially retry
+      this.currentRetryAttempt++;
+      
+      if (this.currentRetryAttempt < this.maxRetryAttempts) {
+        logger.warn(`[FOUNDATION_AGENT] Initialization attempt ${this.currentRetryAttempt}/${this.maxRetryAttempts} failed, will retry`);
+        
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, this.retryDelayMs * this.currentRetryAttempt));
+        
+        // Retry initialization
+        try {
+          return await this.initializeFoundationSystem();
+        } catch (retryError) {
+          logger.error(`[FOUNDATION_AGENT] Retry attempt ${this.currentRetryAttempt} also failed:`, retryError);
+          // Fall through to final error handling
+        }
+      }
+      
+      // Final failure after all retries
+      logger.warn(`[FOUNDATION_AGENT] Foundation pipeline initialization failed after ${this.currentRetryAttempt} attempts, will use basic flow`);
+      this.currentRetryAttempt = 0; // Reset for future attempts
+      throw error; // Let the caller handle the failure
     }
   }
 
@@ -235,13 +379,19 @@ export class FoundationBasicAgent implements IAgent {
     progressCallback?: ProgressCallback
   ): Promise<AgentResponse> {
     try {
-      // Initialize foundation system if enabled
+      // Initialize foundation system if enabled and not initialized
       if (this.config.enableFoundationPipeline && !this.foundationInitialized) {
-        await this.initializeFoundationSystem();
+        try {
+          await this.initializeFoundationSystem();
+        } catch (initError) {
+          logger.warn("[FOUNDATION_AGENT] Foundation initialization failed, using basic flow:", initError);
+          progressCallback?.onThought?.("⚠️ Foundation pipeline unavailable, using basic execution...");
+          return await this.executeWithBasicFlow(task, session, progressCallback);
+        }
       }
 
-      // Use foundation pipeline if available
-      if (this.foundationPipeline && this.config.enableFoundationPipeline) {
+      // Use foundation pipeline if available and properly initialized
+      if (this.foundationPipeline && this.config.enableFoundationPipeline && this.foundationInitialized) {
         return await this.executeWithFoundationPipeline(task, session, progressCallback);
       } else {
         return await this.executeWithBasicFlow(task, session, progressCallback);

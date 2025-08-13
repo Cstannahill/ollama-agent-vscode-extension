@@ -1,11 +1,11 @@
 /**
- * vLLM Integration Verification Script
+ * LMDeploy Integration Verification Script
  * 
- * Simple verification script to test the complete vLLM integration
+ * Simple verification script to test the complete LMDeploy integration
  * without requiring a full test framework setup.
  */
 
-import { VLLMLLM } from '../../api/vllm';
+import { LMDeployLLM } from '../../api/lmdeploy';
 import { OllamaLLM } from '../../api/ollama';
 import { LLMRouter, ProviderConfig, RoutingPreferences } from '../../api/llm-router';
 import { ProviderOptimizer } from '../../core/foundation/adapters/ProviderOptimizer';
@@ -20,7 +20,7 @@ const TEST_CONFIG = {
     baseUrl: 'http://localhost:11434',
     model: 'llama3.2:3b'
   },
-  vllm: {
+  lmdeploy: {
     baseUrl: 'http://localhost:11435',
     model: 'microsoft/DialoGPT-medium'
   }
@@ -33,25 +33,25 @@ interface TestResult {
   duration?: number;
 }
 
-class VLLMIntegrationVerifier {
+class LMDeployIntegrationVerifier {
   private results: TestResult[] = [];
   private ollamaLLM: OllamaLLM;
-  private vllmLLM: VLLMLLM;
+  private lmdeployLLM: LMDeployLLM;
   private router?: LLMRouter;
   private optimizer?: ProviderOptimizer;
   private monitoringManager?: MonitoringManager;
 
   constructor() {
     this.ollamaLLM = new OllamaLLM(TEST_CONFIG.ollama);
-    this.vllmLLM = new VLLMLLM(TEST_CONFIG.vllm);
+    this.lmdeployLLM = new LMDeployLLM(TEST_CONFIG.lmdeploy);
   }
 
   async runVerification(): Promise<TestResult[]> {
-    console.log('🚀 Starting vLLM Integration Verification...\n');
+    console.log('🚀 Starting LMDeploy Integration Verification...\n');
 
     // Basic service availability tests
     await this.testOllamaAvailability();
-    await this.testVLLMAvailability();
+    await this.testLMDeployAvailability();
 
     // Only continue if at least one service is available
     const serviceAvailable = this.results.some(r => r.success && r.name.includes('Availability'));
@@ -66,7 +66,7 @@ class VLLMIntegrationVerifier {
       this.addResult({
         name: 'Service Setup',
         success: false,
-        message: 'Neither Ollama nor vLLM services are available - skipping advanced tests'
+        message: 'Neither Ollama nor LMDeploy services are available - skipping advanced tests'
       });
     }
 
@@ -113,30 +113,30 @@ class VLLMIntegrationVerifier {
     }
   }
 
-  private async testVLLMAvailability(): Promise<void> {
+  private async testLMDeployAvailability(): Promise<void> {
     const startTime = Date.now();
     try {
-      const available = await this.vllmLLM.isAvailable();
+      const available = await this.lmdeployLLM.isAvailable();
       const duration = Date.now() - startTime;
       
       this.addResult({
-        name: 'vLLM Availability',
+        name: 'LMDeploy Availability',
         success: available,
-        message: available ? 'vLLM server is responsive' : 'vLLM server is not available',
+        message: available ? 'LMDeploy server is responsive' : 'LMDeploy server is not available',
         duration
       });
 
       if (available) {
         try {
-          const models = await this.vllmLLM.listModels();
+          const models = await this.lmdeployLLM.listModels();
           this.addResult({
-            name: 'vLLM Models',
+            name: 'LMDeploy Models',
             success: models.length > 0,
             message: `Found ${models.length} models: ${models.slice(0, 3).join(', ')}`
           });
         } catch (error) {
           this.addResult({
-            name: 'vLLM Models',
+            name: 'LMDeploy Models',
             success: false,
             message: `Failed to list models: ${error}`
           });
@@ -144,7 +144,7 @@ class VLLMIntegrationVerifier {
       }
     } catch (error) {
       this.addResult({
-        name: 'vLLM Availability',
+        name: 'LMDeploy Availability',
         success: false,
         message: `Connection failed: ${error}`,
         duration: Date.now() - startTime
@@ -156,14 +156,14 @@ class VLLMIntegrationVerifier {
     try {
       const providerConfig: ProviderConfig = {
         ollama: TEST_CONFIG.ollama,
-        vllm: TEST_CONFIG.vllm
+        lmdeploy: TEST_CONFIG.lmdeploy
       };
 
       const routingPreferences: RoutingPreferences = {
         chatPreference: 'ollama',
-        embeddingPreference: 'vllm',
+        embeddingPreference: 'lmdeploy',
         toolCallingPreference: 'ollama',
-        batchProcessingPreference: 'vllm',
+        batchProcessingPreference: 'lmdeploy',
         preferSpeed: true,
         preferAccuracy: false,
         smallModelThreshold: '7b',
@@ -178,7 +178,7 @@ class VLLMIntegrationVerifier {
       const performanceMonitor = new PerformanceMonitor(this.router, this.optimizer);
       this.monitoringManager = new MonitoringManager(
         this.ollamaLLM, 
-        this.vllmLLM, 
+        this.lmdeployLLM, 
         this.router, 
         this.optimizer
       );
@@ -411,11 +411,11 @@ class VLLMIntegrationVerifier {
 }
 
 // Export for use in other contexts
-export { VLLMIntegrationVerifier, TestResult };
+export { LMDeployIntegrationVerifier, TestResult };
 
 // Run verification if this file is executed directly
 if (require.main === module) {
-  const verifier = new VLLMIntegrationVerifier();
+  const verifier = new LMDeployIntegrationVerifier();
   verifier.runVerification().catch(error => {
     console.error('❌ Verification failed:', error);
     process.exit(1);

@@ -73,8 +73,6 @@ export class ChatPanel {
   private _agentFactory?: AgentFactory;
   private _agentCoordinator?: AgentCoordinator;
   private _chatSession: ChatSession;
-  private _availableModels: string[] = [];
-  private _currentModel: string = "";
   private _selectedAgentType: AgentSpecialization = AgentSpecialization.GENERAL;
   private _agentDisplayInfo: AgentDisplayInfo[] = [];
   private _useAutoAgentSelection: boolean = true;
@@ -101,10 +99,6 @@ export class ChatPanel {
     // Set the webview's initial HTML content
     this._update();
 
-    // Load available models and current model, then update the webview
-    this._loadAvailableModels().then(() => {
-      this._updateModelDropdown();
-    });
 
     // Listen for when the panel is disposed
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
@@ -114,10 +108,6 @@ export class ChatPanel {
       () => {
         if (this._panel.visible) {
           this._update();
-          // Update model dropdown when panel becomes visible
-          if (this._availableModels.length > 0) {
-            this._updateModelDropdown();
-          }
         }
       },
       null,
@@ -157,9 +147,6 @@ export class ChatPanel {
             break;
           case "loadModels":
             await this._loadModelsForSettings();
-            break;
-          case "changeModel":
-            await this._changeModel(message.model);
             break;
           case "changeAgent":
             this._changeSelectedAgent(message.agentType);
@@ -259,7 +246,6 @@ export class ChatPanel {
       isError: false,
       actions: [],
       isProcessing: true,
-      model: this._currentModel, // Add current model to the message
     };
 
     this._messages.push(processingMessage);
@@ -366,7 +352,7 @@ export class ChatPanel {
       } else if (this._selectedAgentType !== AgentSpecialization.GENERAL && this._agentFactory) {
         // Use manually selected specialized agent
         try {
-          const selectedAgent = this._agentFactory.getAgent(this._selectedAgentType);
+          const selectedAgent = this._agentFactory.getAgentSync(this._selectedAgentType);
           if (selectedAgent) {
             actualAgentType = this._selectedAgentType;
             progressCallback?.onThought?.(`🎯 Using ${getAgentDisplayInfo(actualAgentType).displayName} (manual selection)`);
@@ -450,7 +436,6 @@ export class ChatPanel {
         }`,
         timestamp: new Date(),
         isError: true,
-        model: this._currentModel, // Add current model to error messages too
       };
 
       this._messages.push(errorMessage);
@@ -561,7 +546,6 @@ export class ChatPanel {
       this._panel.webview.postMessage({
         command: "modelsLoadedForSettings",
         models: models,
-        currentModel: this._currentModel,
       });
     } catch (error) {
       this._panel.webview.postMessage({
@@ -913,27 +897,7 @@ export class ChatPanel {
             font-size: 14px;
         }
 
-        .model-selector {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
 
-        .model-dropdown {
-            background-color: var(--vscode-dropdown-background);
-            color: var(--vscode-dropdown-foreground);
-            border: 1px solid var(--vscode-dropdown-border);
-            border-radius: 4px;
-            padding: 4px 8px;
-            font-size: 12px;
-            min-width: 120px;
-            max-width: 200px;
-        }
-
-        .model-dropdown:focus {
-            outline: none;
-            border-color: var(--vscode-focusBorder);
-        }
 
         .chat-actions {
             display: flex;
@@ -1920,11 +1884,6 @@ export class ChatPanel {
             </div>
         </div>
 
-        <div class="model-selector">
-            <select id="modelSelect" class="model-dropdown" onchange="changeModel(this.value)">
-                <!-- Models will be populated dynamically -->
-            </select>
-        </div>
         
         <div class="chat-actions">
             <button class="action-button" onclick="openDocumentation()" title="Open Documentation Hub">
@@ -1996,55 +1955,71 @@ export class ChatPanel {
                     </div>
                 </div>
 
-                <!-- vLLM Configuration Section -->
-                <div class="settings-section" id="vllmSection">
-                    <h3>🔥 vLLM Integration (Experimental)</h3>
+                <!-- LMDeploy Configuration Section -->
+                <div class="settings-section" id="lmdeploySection">
+                    <h3>🚀 LMDeploy Integration (Superior Performance)</h3>
                     
                     <div class="setting-item">
                         <div class="checkbox-container">
-                            <input type="checkbox" id="settingsVLLMEnabled" data-setting="vllm.enabled">
-                            <label for="settingsVLLMEnabled">Enable vLLM Support</label>
+                            <input type="checkbox" id="settingsLMDeployEnabled" data-setting="lmdeploy.enabled">
+                            <label for="settingsLMDeployEnabled">Enable LMDeploy Support</label>
                         </div>
-                        <p class="setting-description">Enable experimental vLLM integration for enhanced performance</p>
+                        <p class="setting-description">Enable LMDeploy integration for 1.8x superior performance compared to vLLM</p>
                     </div>
                     
-                    <div class="vllm-settings" id="vllmAdvancedSettings" style="display: none;">
+                    <div class="lmdeploy-settings" id="lmdeployAdvancedSettings" style="display: none;">
                         <div class="setting-item">
-                            <label for="settingsVLLMUrl">vLLM Server URL</label>
-                            <input type="text" id="settingsVLLMUrl" data-setting="vllm.serverUrl" 
+                            <label for="settingsLMDeployUrl">LMDeploy Server URL</label>
+                            <input type="text" id="settingsLMDeployUrl" data-setting="lmdeploy.serverUrl" 
                                    placeholder="http://localhost:11435">
-                            <p class="setting-description">URL of the vLLM server (default: Ollama port + 1)</p>
+                            <p class="setting-description">URL of the LMDeploy server (default: Ollama port + 1)</p>
                         </div>
                         
                         <div class="setting-item">
-                            <label for="settingsVLLMModel">vLLM Model</label>
-                            <input type="text" id="settingsVLLMModel" data-setting="vllm.model" 
-                                   placeholder="microsoft/DialoGPT-medium">
-                            <p class="setting-description">Model to use with vLLM server</p>
+                            <label for="settingsLMDeployModel">LMDeploy Model</label>
+                            <input type="text" id="settingsLMDeployModel" data-setting="lmdeploy.model" 
+                                   placeholder="internlm/internlm2_5-7b-chat">
+                            <p class="setting-description">Model to use with LMDeploy server</p>
                         </div>
                         
                         <div class="setting-item">
-                            <label for="settingsVLLMMaxModelLen">Max Model Length</label>
-                            <input type="number" id="settingsVLLMMaxModelLen" data-setting="vllm.maxModelLen" 
+                            <label for="settingsLMDeploySessionLen">Session Length</label>
+                            <input type="number" id="settingsLMDeploySessionLen" data-setting="lmdeploy.sessionLen" 
                                    min="512" max="32768" value="2048">
-                            <p class="setting-description">Maximum sequence length for vLLM model</p>
+                            <p class="setting-description">Maximum session length for LMDeploy model</p>
                         </div>
                         
                         <div class="setting-item">
-                            <label for="settingsVLLMTensorParallel">Tensor Parallel Size</label>
-                            <input type="number" id="settingsVLLMTensorParallel" data-setting="vllm.tensorParallelSize" 
+                            <label for="settingsLMDeployBatchSize">Max Batch Size</label>
+                            <input type="number" id="settingsLMDeployBatchSize" data-setting="lmdeploy.maxBatchSize" 
+                                   min="1" max="32" value="8">
+                            <p class="setting-description">Maximum batch size for inference optimization</p>
+                        </div>
+                        
+                        <div class="setting-item">
+                            <label for="settingsLMDeployTensorParallel">Tensor Parallel Size</label>
+                            <input type="number" id="settingsLMDeployTensorParallel" data-setting="lmdeploy.tensorParallelSize" 
                                    min="1" max="8" value="1">
                             <p class="setting-description">Number of GPUs for tensor parallelism</p>
                         </div>
                         
                         <div class="setting-item">
-                            <label for="settingsVLLMGPUMemory">GPU Memory Utilization</label>
+                            <label for="settingsLMDeployCache">Cache Max Entry Count</label>
                             <div class="slider-container">
-                                <input type="range" id="settingsVLLMGPUMemory" data-setting="vllm.gpuMemoryUtilization" 
-                                       min="0.1" max="1.0" step="0.05" value="0.9">
-                                <span class="slider-value">0.90</span>
+                                <input type="range" id="settingsLMDeployCache" data-setting="lmdeploy.cacheMaxEntryCount" 
+                                       min="0.1" max="1.0" step="0.05" value="0.8">
+                                <span class="slider-value">0.80</span>
                             </div>
-                            <p class="setting-description">Fraction of GPU memory to use (0.1-1.0)</p>
+                            <p class="setting-description">GPU memory utilization ratio for KV cache (0.1-1.0)</p>
+                        </div>
+                        
+                        <div class="setting-item">
+                            <label for="settingsLMDeployEngine">Inference Engine</label>
+                            <select id="settingsLMDeployEngine" data-setting="lmdeploy.engineType">
+                                <option value="turbomind" selected>TurboMind (Recommended)</option>
+                                <option value="pytorch">PyTorch</option>
+                            </select>
+                            <p class="setting-description">LMDeploy inference engine (TurboMind optimized for performance)</p>
                         </div>
                     </div>
                 </div>
@@ -2058,7 +2033,7 @@ export class ChatPanel {
                         <select id="settingsRoutingChat" data-setting="routing.chatPreference">
                             <option value="auto" selected>Auto (Intelligent)</option>
                             <option value="ollama">Ollama</option>
-                            <option value="vllm">vLLM</option>
+                            <option value="lmdeploy">LMDeploy</option>
                         </select>
                         <p class="setting-description">Preferred provider for chat interactions</p>
                     </div>
@@ -2068,7 +2043,7 @@ export class ChatPanel {
                         <select id="settingsRoutingEmbedding" data-setting="routing.embeddingPreference">
                             <option value="auto">Auto (Intelligent)</option>
                             <option value="ollama">Ollama</option>
-                            <option value="vllm" selected>vLLM (Recommended)</option>
+                            <option value="lmdeploy" selected>LMDeploy (Recommended)</option>
                         </select>
                         <p class="setting-description">Preferred provider for embeddings and similarity tasks</p>
                     </div>
@@ -2078,7 +2053,7 @@ export class ChatPanel {
                         <select id="settingsRoutingTools" data-setting="routing.toolCallingPreference">
                             <option value="auto">Auto (Intelligent)</option>
                             <option value="ollama" selected>Ollama (Recommended)</option>
-                            <option value="vllm">vLLM</option>
+                            <option value="lmdeploy">LMDeploy</option>
                         </select>
                         <p class="setting-description">Preferred provider for structured tool calling</p>
                     </div>
@@ -2088,7 +2063,7 @@ export class ChatPanel {
                         <select id="settingsRoutingBatch" data-setting="routing.batchProcessingPreference">
                             <option value="auto">Auto (Intelligent)</option>
                             <option value="ollama">Ollama</option>
-                            <option value="vllm" selected>vLLM (Recommended)</option>
+                            <option value="lmdeploy" selected>LMDeploy (Recommended)</option>
                         </select>
                         <p class="setting-description">Preferred provider for batch and parallel operations</p>
                     </div>
@@ -2123,10 +2098,10 @@ export class ChatPanel {
                     
                     <div class="setting-item">
                         <div class="checkbox-container">
-                            <input type="checkbox" id="settingsFoundationVLLM" data-setting="foundation.enableVLLMOptimization" checked>
-                            <label for="settingsFoundationVLLM">Enable vLLM Pipeline Optimization</label>
+                            <input type="checkbox" id="settingsFoundationLMDeploy" data-setting="foundation.enableLMDeployOptimization" checked>
+                            <label for="settingsFoundationLMDeploy">Enable LMDeploy Pipeline Optimization</label>
                         </div>
-                        <p class="setting-description">Use vLLM for optimized foundation pipeline stages when available</p>
+                        <p class="setting-description">Use LMDeploy for optimized foundation pipeline stages (1.8x performance improvement)</p>
                     </div>
                 </div>
 
@@ -2178,8 +2153,6 @@ export class ChatPanel {
     <script>
         const vscode = acquireVsCodeApi();
         let messages = ${messagesJson};
-        let availableModels = ${JSON.stringify(this._availableModels)};
-        let currentModel = ${JSON.stringify(this._currentModel)};
         let agentDisplayInfo = ${agentInfoJson};
         let currentAgentInfo = ${currentAgentInfo};
         let useAutoAgentSelection = ${JSON.stringify(this._useAutoAgentSelection)};
@@ -2248,12 +2221,6 @@ export class ChatPanel {
             });
         }
 
-        function changeModel(model) {
-            vscode.postMessage({
-                command: 'changeModel',
-                model: model
-            });
-        }
 
         function changeAgent(agentType) {
             vscode.postMessage({
@@ -2308,19 +2275,21 @@ export class ChatPanel {
             const settings = {
                 // Basic settings
                 ollamaUrl: '${this._getVSCodeConfig("ollamaUrl")}',
-                model: currentModel,
+                model: '${this._getVSCodeConfig("model")}',
                 temperature: '${this._getVSCodeConfig("temperature")}',
                 maxIterations: '${this._getVSCodeConfig("maxIterations")}',
                 logLevel: '${this._getVSCodeConfig("logLevel")}',
                 verbose: ${this._getVSCodeConfig("verbose")},
                 
-                // vLLM settings
-                'vllm.enabled': ${this._getVSCodeConfig("vllm.enabled")},
-                'vllm.serverUrl': '${this._getVSCodeConfig("vllm.serverUrl")}',
-                'vllm.model': '${this._getVSCodeConfig("vllm.model")}',
-                'vllm.maxModelLen': '${this._getVSCodeConfig("vllm.maxModelLen")}',
-                'vllm.tensorParallelSize': '${this._getVSCodeConfig("vllm.tensorParallelSize")}',
-                'vllm.gpuMemoryUtilization': '${this._getVSCodeConfig("vllm.gpuMemoryUtilization")}',
+                // LMDeploy settings
+                'lmdeploy.enabled': ${this._getVSCodeConfig("lmdeploy.enabled")},
+                'lmdeploy.serverUrl': '${this._getVSCodeConfig("lmdeploy.serverUrl")}',
+                'lmdeploy.model': '${this._getVSCodeConfig("lmdeploy.model")}',
+                'lmdeploy.sessionLen': '${this._getVSCodeConfig("lmdeploy.sessionLen")}',
+                'lmdeploy.maxBatchSize': '${this._getVSCodeConfig("lmdeploy.maxBatchSize")}',
+                'lmdeploy.tensorParallelSize': '${this._getVSCodeConfig("lmdeploy.tensorParallelSize")}',
+                'lmdeploy.cacheMaxEntryCount': '${this._getVSCodeConfig("lmdeploy.cacheMaxEntryCount")}',
+                'lmdeploy.engineType': '${this._getVSCodeConfig("lmdeploy.engineType")}',
                 
                 // Routing settings
                 'routing.chatPreference': '${this._getVSCodeConfig("routing.chatPreference")}',
@@ -2332,7 +2301,7 @@ export class ChatPanel {
                 'routing.fallbackTimeout': '${this._getVSCodeConfig("routing.fallbackTimeout")}',
                 
                 // Foundation settings
-                'foundation.enableVLLMOptimization': ${this._getVSCodeConfig("foundation.enableVLLMOptimization")}
+                'foundation.enableLMDeployOptimization': ${this._getVSCodeConfig("foundation.enableLMDeployOptimization")}
             };
 
             // Populate form fields - Basic settings
@@ -2342,13 +2311,15 @@ export class ChatPanel {
             document.getElementById('settingsLogLevel').value = settings.logLevel;
             document.getElementById('settingsVerbose').checked = settings.verbose;
 
-            // Populate vLLM settings
-            document.getElementById('settingsVLLMEnabled').checked = settings['vllm.enabled'];
-            document.getElementById('settingsVLLMUrl').value = settings['vllm.serverUrl'];
-            document.getElementById('settingsVLLMModel').value = settings['vllm.model'];
-            document.getElementById('settingsVLLMMaxModelLen').value = settings['vllm.maxModelLen'];
-            document.getElementById('settingsVLLMTensorParallel').value = settings['vllm.tensorParallelSize'];
-            document.getElementById('settingsVLLMGPUMemory').value = settings['vllm.gpuMemoryUtilization'];
+            // Populate LMDeploy settings
+            document.getElementById('settingsLMDeployEnabled').checked = settings['lmdeploy.enabled'];
+            document.getElementById('settingsLMDeployUrl').value = settings['lmdeploy.serverUrl'];
+            document.getElementById('settingsLMDeployModel').value = settings['lmdeploy.model'];
+            document.getElementById('settingsLMDeploySessionLen').value = settings['lmdeploy.sessionLen'];
+            document.getElementById('settingsLMDeployBatchSize').value = settings['lmdeploy.maxBatchSize'];
+            document.getElementById('settingsLMDeployTensorParallel').value = settings['lmdeploy.tensorParallelSize'];
+            document.getElementById('settingsLMDeployCache').value = settings['lmdeploy.cacheMaxEntryCount'];
+            document.getElementById('settingsLMDeployEngine').value = settings['lmdeploy.engineType'];
 
             // Populate routing settings
             document.getElementById('settingsRoutingChat').value = settings['routing.chatPreference'];
@@ -2360,19 +2331,19 @@ export class ChatPanel {
             document.getElementById('settingsRoutingTimeout').value = settings['routing.fallbackTimeout'];
 
             // Populate foundation settings
-            document.getElementById('settingsFoundationVLLM').checked = settings['foundation.enableVLLMOptimization'];
+            document.getElementById('settingsFoundationLMDeploy').checked = settings['foundation.enableLMDeployOptimization'];
 
             // Update slider displays
             const tempSlider = document.getElementById('settingsTemperature');
             const tempValue = tempSlider.parentElement.querySelector('.slider-value');
             if (tempValue) tempValue.textContent = tempSlider.value;
             
-            const gpuSlider = document.getElementById('settingsVLLMGPUMemory');
-            const gpuValue = gpuSlider.parentElement.querySelector('.slider-value');
-            if (gpuValue) gpuValue.textContent = parseFloat(gpuSlider.value).toFixed(2);
+            const cacheSlider = document.getElementById('settingsLMDeployCache');
+            const cacheValue = cacheSlider.parentElement.querySelector('.slider-value');
+            if (cacheValue) cacheValue.textContent = parseFloat(cacheSlider.value).toFixed(2);
 
-            // Show/hide vLLM advanced settings based on enabled state
-            toggleVLLMAdvancedSettings(settings['vllm.enabled']);
+            // Show/hide LMDeploy advanced settings based on enabled state
+            toggleLMDeployAdvancedSettings(settings['lmdeploy.enabled']);
 
             // Load models for settings
             loadModelsForSettings();
@@ -2392,9 +2363,9 @@ export class ChatPanel {
             if (element.type === 'checkbox') {
                 value = element.checked;
                 
-                // Special handling for vLLM enabled checkbox
-                if (key === 'vllm.enabled') {
-                    toggleVLLMAdvancedSettings(value);
+                // Special handling for LMDeploy enabled checkbox
+                if (key === 'lmdeploy.enabled') {
+                    toggleLMDeployAdvancedSettings(value);
                 }
             } else if (element.type === 'number' || element.type === 'range') {
                 value = parseFloat(value);
@@ -2407,8 +2378,8 @@ export class ChatPanel {
             });
         }
 
-        function toggleVLLMAdvancedSettings(enabled) {
-            const advancedSettings = document.getElementById('vllmAdvancedSettings');
+        function toggleLMDeployAdvancedSettings(enabled) {
+            const advancedSettings = document.getElementById('lmdeployAdvancedSettings');
             const routingSection = document.getElementById('routingSection');
             const foundationSection = document.getElementById('foundationSection');
             
@@ -2424,27 +2395,6 @@ export class ChatPanel {
             }
         }
 
-        function populateModelSelect() {
-            const select = document.getElementById('modelSelect');
-            select.innerHTML = '';
-            
-            if (availableModels.length === 0) {
-                const option = document.createElement('option');
-                option.value = '';
-                option.textContent = 'No models available';
-                option.disabled = true;
-                select.appendChild(option);
-                return;
-            }
-            
-            availableModels.forEach(model => {
-                const option = document.createElement('option');
-                option.value = model;
-                option.textContent = model;
-                option.selected = model === currentModel;
-                select.appendChild(option);
-            });
-        }
 
         function populateAgentSelect() {
             const select = document.getElementById('agentSelect');
@@ -2938,32 +2888,18 @@ export class ChatPanel {
                 case 'showThinking':
                     showThinking(message.show);
                     break;
-                case 'modelChanged':
-                    currentModel = message.model;
-                    populateModelSelect();
-                    break;
-                case 'modelsUpdated':
-                    availableModels = message.models;
-                    currentModel = message.currentModel;
-                    populateModelSelect();
-                    break;
                 case 'toggleSettingsView':
                     toggleSettings();
                     break;
                 case 'settingUpdated':
                     if (message.success) {
                         console.log('Setting updated:', message.key, '=', message.value);
-                        // Update local values if needed
-                        if (message.key === 'model') {
-                            currentModel = message.value;
-                            populateModelSelect();
-                        }
                     } else {
                         alert('Failed to update setting: ' + message.error);
                     }
                     break;
                 case 'modelsLoadedForSettings':
-                    populateSettingsModels(message.models, message.currentModel);
+                    populateSettingsModels(message.models);
                     break;
                 case 'modelsErrorForSettings':
                     handleSettingsModelsError(message.error);
@@ -2984,7 +2920,7 @@ export class ChatPanel {
         });
 
 
-        function populateSettingsModels(models, currentModelValue) {
+        function populateSettingsModels(models) {
             const select = document.getElementById('settingsModel');
             select.innerHTML = '';
             
@@ -3001,7 +2937,7 @@ export class ChatPanel {
                 const option = document.createElement('option');
                 option.value = model;
                 option.textContent = model;
-                option.selected = model === currentModelValue;
+                // No selection needed - will use VS Code configuration
                 select.appendChild(option);
             });
         }
@@ -3012,7 +2948,6 @@ export class ChatPanel {
         }
 
         // Initialize the UI
-        populateModelSelect();
         populateAgentSelect();
         renderMessages();
 
@@ -3077,76 +3012,6 @@ export class ChatPanel {
     return config.get(key);
   }
 
-  /**
-   * Load available models from Ollama
-   */
-  private async _loadAvailableModels(): Promise<void> {
-    try {
-      const models = await this._agent.getAvailableModels();
-      this._availableModels = models;
-
-      // Set current model from VS Code configuration
-      const config = vscode.workspace.getConfiguration("ollamaAgent");
-      this._currentModel = config.get<string>("model") || models[0] || "";
-
-      logger.info(
-        `Loaded ${models.length} available models, current: ${this._currentModel}`
-      );
-    } catch (error) {
-      logger.error("Failed to load available models:", error);
-      this._availableModels = [];
-      this._currentModel = "";
-    }
-  }
-
-  /**
-   * Update the model dropdown in the webview
-   */
-  private _updateModelDropdown(): void {
-    this._panel.webview.postMessage({
-      command: "modelsUpdated",
-      models: this._availableModels,
-      currentModel: this._currentModel,
-    });
-  }
-
-  /**
-   * Change the current model
-   */
-  private async _changeModel(model: string): Promise<void> {
-    try {
-      if (!this._availableModels.includes(model)) {
-        throw new Error(`Model ${model} is not available`);
-      }
-
-      this._currentModel = model;
-
-      // Update the agent's model
-      this._agent.updateModel(model);
-
-      // Update VS Code configuration
-      const config = vscode.workspace.getConfiguration("ollamaAgent");
-      await config.update("model", model, vscode.ConfigurationTarget.Workspace);
-
-      logger.info(`Changed model to: ${model}`);
-
-      // Notify the webview of the model change
-      this._panel.webview.postMessage({
-        command: "modelChanged",
-        model: model,
-      });
-
-      // Show success message
-      vscode.window.showInformationMessage(`Switched to model: ${model}`);
-    } catch (error) {
-      logger.error("Failed to change model:", error);
-      vscode.window.showErrorMessage(
-        `Failed to change model: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-  }
 
   /**
    * Change the selected agent type

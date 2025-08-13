@@ -487,6 +487,7 @@ export class VLLMChatModel extends BaseChatModel {
 
   private config: VLLMConfig;
   private boundTools: StructuredToolInterface[] = [];
+  private toolSystemPromptCache: Map<string, string> = new Map(); // Cache for tool system prompts
 
   constructor(config: VLLMConfig) {
     super({});
@@ -666,13 +667,27 @@ export class VLLMChatModel extends BaseChatModel {
   }
 
   private createToolCallingSystemPrompt(): string {
+    // Create cache key based on bound tools (for cache hit)
+    const toolNamesHash = this.boundTools.map(t => t.name).sort().join('|');
+    const cacheKey = `tools_${toolNamesHash}_${this.boundTools.length}`;
+    
+    // Check cache first (avoids expensive 170KB+ generation)
+    const cached = this.toolSystemPromptCache.get(cacheKey);
+    if (cached) {
+      logger.debug(`[VLLM_CHAT] Tool system prompt cache hit for ${this.boundTools.length} tools`);
+      return cached;
+    }
+
+    logger.debug(`[VLLM_CHAT] Generating tool system prompt for ${this.boundTools.length} tools (cache miss)`);
+    
+    // Generate tool descriptions (expensive operation)
     const toolsJson = this.boundTools.map((tool) => ({
       name: tool.name,
       description: tool.description,
       parameters: tool.schema,
     }));
 
-    return `# Tool Calling Instructions
+    const systemPrompt = `# Tool Calling Instructions
 
 You have access to the following tools. When you need to use a tool, respond with a JSON object in this exact format:
 
@@ -702,6 +717,22 @@ Rules:
 5. After receiving tool results, provide a helpful response to the user
 
 If you don't need to use any tools, respond normally without the JSON format.`;
+
+    // Cache the result for future use (improves performance significantly)
+    this.toolSystemPromptCache.set(cacheKey, systemPrompt);
+    
+    // Limit cache size to prevent memory leaks
+    if (this.toolSystemPromptCache.size > 10) {
+      const firstKey = this.toolSystemPromptCache.keys().next().value;
+      if (firstKey) {
+        this.toolSystemPromptCache.delete(firstKey);
+      }
+    }
+    
+    const promptSize = Math.round(systemPrompt.length / 1024);
+    logger.info(`[VLLM_CHAT] Cached tool system prompt (${promptSize}KB) for ${this.boundTools.length} tools`);
+    
+    return systemPrompt;
   }
 
   private parseToolCalls(content: string): LangChainToolCall[] {

@@ -37,8 +37,8 @@ export async function testCachePerformance(): Promise<void> {
       }
     } as any);
 
-    // Create optimized factory
-    const optimizedFactory = new OptimizedFoundationAgentFactory({
+    // Create optimized factory (using singleton)
+    const optimizedFactory = OptimizedFoundationAgentFactory.getInstance({
       ollamaUrl: config.ollamaUrl,
       model: config.model,
       toolManager,
